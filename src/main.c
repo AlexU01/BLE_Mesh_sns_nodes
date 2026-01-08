@@ -8,7 +8,9 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/mesh.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/settings/settings.h>
 #include <dk_buttons_and_leds.h>
+#include <zephyr/drivers/hwinfo.h>
 #include "model_handler.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -20,7 +22,7 @@ static struct k_work send_work;
  * Provisioning Configuration 
  * UUID and keys for the provisioner to identify this node.
  */
-static const uint8_t dev_uuid[16] = { 0xdd, 0xdd }; /* Use random UUIDs in prod */
+static uint8_t dev_uuid[16] = { 0xdd, 0xaa }; /* Use random UUIDs in prod */
 
 static void provisioning_complete(uint16_t net_idx, uint16_t addr)
 {
@@ -95,6 +97,13 @@ int main(void)
     }
 
     LOG_INF("Bluetooth initialized");
+
+    err = hwinfo_get_device_id(dev_uuid, sizeof(dev_uuid));
+    if (err < 0) {
+        LOG_WRN("Failed to get device ID (err %d), using random UUID", err);
+        bt_rand(dev_uuid, sizeof(dev_uuid));
+    }
+    LOG_HEXDUMP_INF(dev_uuid, sizeof(dev_uuid), "Device UUID");
 
     err = bt_mesh_init(&prov, &comp);
     if (err) {
