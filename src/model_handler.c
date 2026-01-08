@@ -64,7 +64,10 @@ BT_MESH_HEALTH_PUB_DEFINE(health_pub, 0);
  */
 
 /* Publication context - required for the model to send messages */
-static struct bt_mesh_model_pub vnd_pub;
+/* * Defines 'vnd_pub' and allocates a buffer for it.
+ * Buffer length: 3 bytes for Vendor OpCode + 4 bytes for uint32_t
+ */
+BT_MESH_MODEL_PUB_DEFINE(vnd_pub, NULL, 3 + sizeof(uint32_t));
 
 /*
  * 2. Message Handlers 
