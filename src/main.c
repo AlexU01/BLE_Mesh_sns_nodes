@@ -11,18 +11,16 @@
 #include <zephyr/settings/settings.h>
 #include <dk_buttons_and_leds.h>
 #include <zephyr/drivers/hwinfo.h>
+#include <zephyr/sys/reboot.h>
 #include "model_handler.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-static uint32_t app_counter = 0;
+static uint32_t app_counter = 110;
 static struct k_work send_work;
 
-/*
- * Provisioning Configuration 
- * UUID and keys for the provisioner to identify this node.
- */
-static uint8_t dev_uuid[16] = { 0xdd, 0xaa }; /* Use random UUIDs in prod */
+// UUID so device is recognised, value will be the same correspond as the MCU HW UUID
+static uint8_t dev_uuid[16];
 
 static void provisioning_complete(uint16_t net_idx, uint16_t addr)
 {
@@ -31,7 +29,11 @@ static void provisioning_complete(uint16_t net_idx, uint16_t addr)
 
 static void provisioning_reset(void)
 {
-    LOG_WRN("Node reset");
+    // Connection settings should be wiped by the stack when a node is reset by the provisioner
+    // Rebooting should ensure that advertising starts from a clean state
+    // TODO: Add network core force off before reboot if there are issues with peripherals after a restart.
+    LOG_WRN("Node reset. Rebooting.");
+    sys_reboot(SYS_REBOOT_WARM);
 }
 
 static const struct bt_mesh_prov prov = {
@@ -40,11 +42,7 @@ static const struct bt_mesh_prov prov = {
     .reset = provisioning_reset,
 };
 
-/*
- * Application Logic
- */
-
-/* Work item to offload sending from the button interrupt handler */
+// Work item to offload sending from the button interrupt handler
 static void send_work_handler(struct k_work *work)
 {
     app_counter++;
@@ -53,7 +51,7 @@ static void send_work_handler(struct k_work *work)
 
 static void button_handler(uint32_t button_state, uint32_t has_changed)
 {
-    /* If Button 1 (bit 0) is pressed */
+    // If Button 1 (bit 0) is pressed
     if ((has_changed & DK_BTN1_MSK) && (button_state & DK_BTN1_MSK)) {
         k_work_submit(&send_work);
     }
@@ -65,7 +63,6 @@ int main(void)
 
     LOG_INF("Initializing Bare-Bones BLE Mesh Vendor Sample");
 
-    /* Initialize LEDs and Buttons */
     err = dk_buttons_init(button_handler);
     if (err) {
         LOG_ERR("Button init failed (err %d)", err);
@@ -78,24 +75,20 @@ int main(void)
         return err;
     }
 
-    /* Initialize the Model Handler */
     err = model_handler_init();
     if (err) {
         LOG_ERR("Model handler init failed (err %d)", err);
         return err;
     }
 
-    /* Initialize the work queue item */
+    // Init work queue itme for button press
     k_work_init(&send_work, send_work_handler);
 
-    /* Initialize Bluetooth Mesh */
-    /* Note: We pass the 'comp' defined in model_handler.c */
     err = bt_enable(NULL);
     if (err) {
         LOG_ERR("Bluetooth init failed (err %d)", err);
         return err;
     }
-
     LOG_INF("Bluetooth initialized");
 
     err = hwinfo_get_device_id(dev_uuid, sizeof(dev_uuid));
@@ -103,19 +96,22 @@ int main(void)
         LOG_WRN("Failed to get device ID (err %d), using random UUID", err);
         bt_rand(dev_uuid, sizeof(dev_uuid));
     }
-    LOG_HEXDUMP_INF(dev_uuid, sizeof(dev_uuid), "Device UUID");
 
+    // Provisioning data is populated above
+    // Composition data is populated in model_handler.c
     err = bt_mesh_init(&prov, &comp);
     if (err) {
         LOG_ERR("Mesh init failed (err %d)", err);
         return err;
     }
 
+    // Reload connection data if persistent storage is configured
 	if (IS_ENABLED(CONFIG_SETTINGS)) {
 		settings_load();
 	}
 
-	/* This will be a no-op if settings_load() loaded provisioning info */
+    // Start advertising
+	// This will be a no-op if settings_load() loaded provisioning info
 	bt_mesh_prov_enable(BT_MESH_PROV_ADV | BT_MESH_PROV_GATT);
 
     LOG_INF("Mesh initialized. Waiting for provisioning...");

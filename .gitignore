@@ -4,3 +4,6 @@
 
 # build
 /build*/
+
+# app sign key
+*.pem
