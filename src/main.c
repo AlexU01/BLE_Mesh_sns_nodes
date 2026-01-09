@@ -46,8 +46,20 @@ static const struct bt_mesh_prov prov = {
 // Work item to offload sending from the button interrupt handler
 static void send_work_handler(struct k_work *work)
 {
+    struct sensor_message msg;
+
     app_counter++;
-    model_handler_send(app_counter);
+    msg.timestamp = k_uptime_get_32();
+
+    if (app_counter % 2 == 0) {
+        msg.type = SENSOR_TYPE_TEMP_C;
+        msg.value = 2450;
+    } else {
+        msg.type = SENSOR_TYPE_COUNTER;
+        msg.value = app_counter;
+    }
+
+    model_handler_send(&msg);
 }
 
 static void button_handler(uint32_t button_state, uint32_t has_changed)
@@ -55,6 +67,24 @@ static void button_handler(uint32_t button_state, uint32_t has_changed)
     // If Button 1 (bit 0) is pressed
     if ((has_changed & DK_BTN1_MSK) && (button_state & DK_BTN1_MSK)) {
         k_work_submit(&send_work);
+    }
+}
+
+static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *param)
+{
+    switch (cb_status) {
+        case USB_DC_CONNECTED: 
+            LOG_INF("USB Power");
+            break;
+        case USB_DC_CONFIGURED:
+            LOG_INF("USB Configured");
+            break;
+        case USB_DC_DISCONNECTED:
+            LOG_INF("USB Disconnected");
+            break;
+        default:
+            // LOG_INF("USB UNKNOWN STATUS");
+            break;
     }
 }
 
@@ -84,7 +114,7 @@ int main(void)
 
     // Enable USB stack for DFU and recovery
     if (IS_ENABLED(CONFIG_USB_DEVICE_STACK)) {
-		int err = usb_enable(NULL);
+		int err = usb_enable(usb_status_cb);
 		if (err) {
             LOG_ERR("USB stack init failed (err %d)", err);
 			return 0;

@@ -1,28 +1,32 @@
-/*
- * Copyright (c) 2024 Nordic Semiconductor ASA
- *
- * SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
- */
-
 #ifndef MODEL_HANDLER_H__
 #define MODEL_HANDLER_H__
 
 #include <zephyr/bluetooth/mesh.h>
 
-/* Using a test Company ID. Real products must use an assigned 16-bit Company ID. */
+// Test company and vendor ID
 #define TEST_VND_COMPANY_ID 0xFFFF
 #define TEST_VND_MODEL_ID   0x0001
 
-/* Custom OpCode: 3-byte header for Vendor Models (C0 | ID) + Company ID */
-/* We will define the OpCode logic in the .c file, but access it here */
+// Custom OpCode: 3-byte header for Vendor Models (C0 | ID) + Company ID
 #define BT_MESH_MODEL_OP_MESSAGE BT_MESH_MODEL_OP_3(0x01, TEST_VND_COMPANY_ID)
 
-/* The payload we want to transmit */
-struct simple_message {
-    uint32_t counter;
+// Sensor types that the node can read and send data for
+enum sensor_type {
+    SENSOR_TYPE_COUNTER = 0,
+    SENSOR_TYPE_TEMP_C,
+    SENSOR_TYPE_HUMID_PC,
+    SENSOR_TYPE_BATT_MV,
 };
 
-/* External reference to the model composition */
+// Payload structure - limited to 9 bytes for now so it can use unfragmented transmission
+struct sensor_message {
+    uint8_t type; // Using enum sensor_type would make this field 4 bits, as it would be considered an int
+    uint32_t timestamp;
+    int32_t value;
+};
+#define SENSOR_PAYLOAD_LEN (sizeof(uint8_t) + sizeof(uint32_t) + sizeof(int32_t))
+
+// Mesh model composition
 extern const struct bt_mesh_comp comp;
 
 /**
@@ -31,10 +35,10 @@ extern const struct bt_mesh_comp comp;
 int model_handler_init(void);
 
 /**
- * @brief Send the integer counter to the publication address
- * * @param counter The integer value to send
- * @return int 0 on success, or negative error code
+ * @brief Send a structured sensor message
+ * @param msg Pointer to the message struct
+ * @return 0 on success, or negative error code
  */
-int model_handler_send(uint32_t counter);
+int model_handler_send(struct sensor_message *msg);
 
 #endif /* MODEL_HANDLER_H__ */
