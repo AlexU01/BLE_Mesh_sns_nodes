@@ -12,11 +12,12 @@
 #include <dk_buttons_and_leds.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/usb/usb_device.h>
 #include "model_handler.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-static uint32_t app_counter = 110;
+static uint32_t app_counter = 0;
 static struct k_work send_work;
 
 // UUID so device is recognised, value will be the same correspond as the MCU HW UUID
@@ -80,6 +81,15 @@ int main(void)
         LOG_ERR("Model handler init failed (err %d)", err);
         return err;
     }
+
+    // Enable USB stack for DFU and recovery
+    if (IS_ENABLED(CONFIG_USB_DEVICE_STACK)) {
+		int err = usb_enable(NULL);
+		if (err) {
+            LOG_ERR("USB stack init failed (err %d)", err);
+			return 0;
+		}
+	}
 
     // Init work queue itme for button press
     k_work_init(&send_work, send_work_handler);

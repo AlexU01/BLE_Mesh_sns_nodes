@@ -5,7 +5,6 @@
   };
 };
 
-/* STEP 2.2 - Add external flash to MCUboot */
 &mx25r64 {
 	status = "okay";
 };
@@ -13,5 +12,11 @@
 / {
 	chosen {
 		nordic,pm-ext-flash = &mx25r64;
+	};
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
 	};
 };

@@ -2,8 +2,15 @@
 	status = "okay";
 };
 
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
 / {
 	chosen {
 		nordic,pm-ext-flash = &mx25r64;
+		zephyr,uart-mcumgr = &cdc_acm_uart0;
 	};
 };

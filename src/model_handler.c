@@ -150,6 +150,7 @@ int model_handler_send(uint32_t counter)
     /* Prepare the publication message */
     if (vnd_pub.addr == BT_MESH_ADDR_UNASSIGNED) {
         LOG_WRN("Publication address not set! Provision the node first.");
+        LOG_WRN("Counter value is %d", counter);
         return -EADDRNOTAVAIL;
     }
 
