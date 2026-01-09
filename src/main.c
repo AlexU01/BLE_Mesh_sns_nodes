@@ -12,6 +12,7 @@
 #include <dk_buttons_and_leds.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/usb/usb_device.h>
 #include "model_handler.h"
 
@@ -22,6 +23,22 @@ static struct k_work send_work;
 
 // UUID so device is recognised, value will be the same correspond as the MCU HW UUID
 static uint8_t dev_uuid[16];
+
+static volatile bool is_usb_conn = false;
+
+// Get the CDC ACM UART device from the Overlay
+const struct device *usb_uart_dev = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
+
+static void gateway_data_handler(const uint8_t *data, const uint8_t len)
+{
+    if (!is_usb_conn || !device_is_ready(usb_uart_dev)) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < len; i++) {
+        uart_poll_out(usb_uart_dev, data[i]);
+    }
+}
 
 static void provisioning_complete(uint16_t net_idx, uint16_t addr)
 {
@@ -78,9 +95,13 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
             break;
         case USB_DC_CONFIGURED:
             LOG_INF("USB Configured");
+            is_usb_conn = true;
+            dk_set_led_on(DK_LED4);
             break;
         case USB_DC_DISCONNECTED:
             LOG_INF("USB Disconnected");
+            is_usb_conn = false;
+            dk_set_led_off(DK_LED4);
             break;
         default:
             // LOG_INF("USB UNKNOWN STATUS");
@@ -106,10 +127,15 @@ int main(void)
         return err;
     }
 
-    err = model_handler_init();
+    err = model_handler_init(gateway_data_handler);
     if (err) {
         LOG_ERR("Model handler init failed (err %d)", err);
         return err;
+    }
+
+    if (!device_is_ready(usb_uart_dev)) {
+        LOG_ERR("CDC ACM device not ready");
+        return -ENODEV;
     }
 
     // Enable USB stack for DFU and recovery

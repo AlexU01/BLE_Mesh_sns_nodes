@@ -10,6 +10,9 @@
 // Custom OpCode: 3-byte header for Vendor Models (C0 | ID) + Company ID
 #define BT_MESH_MODEL_OP_MESSAGE BT_MESH_MODEL_OP_3(0x01, TEST_VND_COMPANY_ID)
 
+// Callback type for sending data strings to the Gateway
+typedef void (*gateway_data_cb_t)(const uint8_t *data_buf, const uint8_t len);
+
 // Sensor types that the node can read and send data for
 enum sensor_type {
     SENSOR_TYPE_COUNTER = 0,
@@ -32,7 +35,7 @@ extern const struct bt_mesh_comp comp;
 /**
  * @brief Initialize the mesh model subsystem
  */
-int model_handler_init(void);
+int model_handler_init(gateway_data_cb_t _gw_cb);
 
 /**
  * @brief Send a structured sensor message

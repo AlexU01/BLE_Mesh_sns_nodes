@@ -1,6 +1,7 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/mesh.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/byteorder.h>
 #include "model_handler.h"
 
 #include <dk_buttons_and_leds.h>
@@ -10,6 +11,7 @@ LOG_MODULE_REGISTER(model_handler, LOG_LEVEL_INF);
 // Define the Health Pub model and Attention callbacks 
 static struct k_work_delayable attention_blink_work;
 static bool attention;
+static gateway_data_cb_t gw_cb = NULL;
 
 static void attention_blink(struct k_work *work)
 {
@@ -63,12 +65,8 @@ static int handle_message(const struct bt_mesh_model *model,
                           struct bt_mesh_msg_ctx *ctx,
                           struct net_buf_simple *buf)
 {
-    static struct sensor_message sm;
-
-    // Ignore messages from current node
-    if (bt_mesh_model_elem(model)->rt->addr == ctx->addr) {
-        return 0;
-    }
+    static struct sensor_message sm = {0};
+    static uint8_t usb_buf[20] = {0};
 
     // Verify that message has correct size
     if (buf->len < SENSOR_PAYLOAD_LEN) {
@@ -81,8 +79,44 @@ static int handle_message(const struct bt_mesh_model *model,
     sm.timestamp = net_buf_simple_pull_le32(buf);
     sm.value     = (int32_t)(net_buf_simple_pull_le32(buf));
 
-    LOG_INF("RX 0x%04x:, %d, %u, %d", 
-            ctx->addr, sm.type, sm.timestamp, sm.value);
+    // Ignore messages from current node
+    if (bt_mesh_model_elem(model)->rt->addr != ctx->addr) {
+        // TODO: Loopback has to be treated differently, ideally the gw node should omit publishing measurements and send data straight on the USB
+        LOG_INF("RX 0x%04x:, %d, %u, %d", 
+                ctx->addr, sm.type, sm.timestamp, sm.value);
+    }
+
+    // Send data to GW via USB if a callback was registered
+    if (gw_cb) {
+        /*
+        * Data is serialized in this format:
+        * |'R'|'X'| src_addr | sns_type | ts | value |'\0'|
+        */ 
+        uint8_t offset = 0; 
+        // Sync chars
+        usb_buf[offset++] = 'R';
+        usb_buf[offset++] = 'X';
+        
+        // Source address
+        sys_put_le16(ctx->addr, usb_buf+offset);
+        offset += sizeof(ctx->addr);
+        
+        // Sensor type (8bit)
+        usb_buf[offset++] = sm.type;
+
+        // Timestamp
+        sys_put_le32(sm.timestamp, usb_buf+offset);
+        offset += sizeof(sm.timestamp);
+
+        // Sensor value
+        sys_put_le32((uint32_t)sm.value, usb_buf+offset);
+        offset += sizeof(sm.value);
+        
+        // End char
+        usb_buf[offset++] = '\0';
+
+        gw_cb(usb_buf, offset); // 'offset' also represents the number of bytes written at this point
+    }
 
     return 0;
 }
@@ -120,11 +154,12 @@ const struct bt_mesh_comp comp = {
 };
 
 // Public Functions
-int model_handler_init(void)
+int model_handler_init(gateway_data_cb_t _gw_cb)
 {
 	// Init the work queue object for the attention blink
 	k_work_init_delayable(&attention_blink_work, attention_blink);
-    
+    gw_cb = _gw_cb;
+
 	return 0;
 }
 
