@@ -13,6 +13,15 @@
 // Callback type for sending data strings to the Gateway
 typedef void (*gateway_data_cb_t)(const uint8_t *data_buf, const uint8_t len);
 
+// Callback for LED control
+typedef void (*led_control_cb_t)(uint32_t led_mask);
+
+// Structure to hold and pass the callbacks
+struct model_cbs {
+    gateway_data_cb_t gw_cb;
+    led_control_cb_t led_cb;
+};
+
 // Sensor types that the node can read and send data for
 enum sensor_type {
     SENSOR_TYPE_COUNTER = 0,
@@ -35,7 +44,8 @@ extern const struct bt_mesh_comp comp;
 /**
  * @brief Initialize the mesh model subsystem
  */
-int model_handler_init(gateway_data_cb_t _gw_cb);
+// int model_handler_init(gateway_data_cb_t _gw_cb, led_control_cb_t _led_cb);
+int model_handler_init(const struct model_cbs _mdl_cbs);
 
 /**
  * @brief Send a structured sensor message

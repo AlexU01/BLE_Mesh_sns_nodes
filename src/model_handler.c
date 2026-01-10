@@ -4,14 +4,16 @@
 #include <zephyr/sys/byteorder.h>
 #include "model_handler.h"
 
-#include <dk_buttons_and_leds.h>
-
 LOG_MODULE_REGISTER(model_handler, LOG_LEVEL_INF);
 
 // Define the Health Pub model and Attention callbacks 
 static struct k_work_delayable attention_blink_work;
 static bool attention;
-static gateway_data_cb_t gw_cb = NULL;
+
+static struct model_cbs mdl_cbs = {
+    .gw_cb = NULL,
+    .led_cb = NULL
+};
 
 static void attention_blink(struct k_work *work)
 {
@@ -24,10 +26,13 @@ static void attention_blink(struct k_work *work)
 	};
 
 	if (attention) {
-		dk_set_leds(pattern[idx++ % ARRAY_SIZE(pattern)]);
+        // Make sure cb isn't NULL first
+        if (mdl_cbs.led_cb)
+            mdl_cbs.led_cb(pattern[idx++ % ARRAY_SIZE(pattern)]);
 		k_work_reschedule(&attention_blink_work, K_MSEC(30));
 	} else {
-		dk_set_leds(DK_NO_LEDS_MSK);
+        if (mdl_cbs.led_cb)
+            mdl_cbs.led_cb(0);
 	}
 }
 
@@ -87,7 +92,7 @@ static int handle_message(const struct bt_mesh_model *model,
     }
 
     // Send data to GW via USB if a callback was registered
-    if (gw_cb) {
+    if (mdl_cbs.gw_cb) {
         /*
         * Data is serialized in this format:
         * |'R'|'X'| src_addr | sns_type | ts | value |'\0'|
@@ -115,7 +120,7 @@ static int handle_message(const struct bt_mesh_model *model,
         // End char
         usb_buf[offset++] = '\0';
 
-        gw_cb(usb_buf, offset); // 'offset' also represents the number of bytes written at this point
+        mdl_cbs.gw_cb(usb_buf, offset); // 'offset' also represents the number of bytes written at this point
     }
 
     return 0;
@@ -154,11 +159,14 @@ const struct bt_mesh_comp comp = {
 };
 
 // Public Functions
-int model_handler_init(gateway_data_cb_t _gw_cb)
+int model_handler_init(const struct model_cbs _mdl_cbs)
 {
 	// Init the work queue object for the attention blink
 	k_work_init_delayable(&attention_blink_work, attention_blink);
-    gw_cb = _gw_cb;
+
+    // Store callbacks
+    mdl_cbs.gw_cb = _mdl_cbs.gw_cb;
+    mdl_cbs.led_cb = _mdl_cbs.led_cb;
 
 	return 0;
 }
