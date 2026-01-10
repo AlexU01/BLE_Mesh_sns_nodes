@@ -98,13 +98,23 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
             is_usb_conn = true;
             dk_set_led_on(DK_LED4);
             break;
+        case USB_DC_RESUME:
+            LOG_INF("USB Resumed");
+            is_usb_conn = true;
+            dk_set_led_on(DK_LED4);
+            break;
         case USB_DC_DISCONNECTED:
             LOG_INF("USB Disconnected");
             is_usb_conn = false;
             dk_set_led_off(DK_LED4);
             break;
+        case USB_DC_SUSPEND:
+            LOG_INF("USB Disconnected");
+            is_usb_conn = false;
+            dk_set_led_off(DK_LED4);
+            break;
         default:
-            // LOG_INF("USB UNKNOWN STATUS");
+            ;
             break;
     }
 }

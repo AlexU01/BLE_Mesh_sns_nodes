@@ -1,0 +1,21 @@
+mainmenu "Mesh Node Application"
+
+source "Kconfig.zephyr"
+
+config APP_ENABLE_DFU
+    bool "Enable DFU (MCUmgr + External Flash)"
+    default y
+    help
+      Enables MCUmgr, and memory layout for DFU. Disable this for faster dev builds.
+      NOTE: You must also enable/disable SB_CONFIG_BOOTLOADER_MCUBOOT in sysbuild.conf!
+
+    # 1. MCUmgr
+    select MCUMGR
+    select MCUMGR_GRP_OS
+    select MCUMGR_GRP_IMG
+    select MCUMGR_TRANSPORT_UART
+    select IMG_MANAGER
+    
+    # 2. Memory Layout (External Flash)
+    # This tells the partition manager to use the external flash for the secondary slot
+    select PM_EXTERNAL_FLASH_MCUBOOT_SECONDARY

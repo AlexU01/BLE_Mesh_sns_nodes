@@ -28,7 +28,7 @@ def find_gateway_port():
     ports = serial.tools.list_ports.comports()
     for port in ports:
         if port.vid == DEVICE_VID and port.pid == DEVICE_PID:
-            print(f"Found device: {port.product}")
+            print(f"Found device: {port.description}")
             return port.device
     return None
 
@@ -86,7 +86,7 @@ def main():
     except serial.SerialException as e:
         print(f"Serial Error: {e}")
     except KeyboardInterrupt:
-        print("\nStopping...")
+        print("\nStopping")
     finally:
         if 'ser' in locals() and ser.is_open:
             ser.close()
