@@ -7,3 +7,6 @@
 
 # app sign key
 *.pem
+
+# database
+*.db
