@@ -1,20 +1,17 @@
 import serial
 import serial.tools.list_ports
 import struct
-import time
 from datetime import datetime
 
 # Configuration matching prj.conf
 DEVICE_VID = 0x1915
-DEVICE_PID = 0x5300
+DEVICE_PID = 0x5301
 BAUD_RATE = 115200
 
-# Packet Structure
-# Header: 'R', 'X' (2 bytes)
-# Data: Addr(2), Type(1), TS(4), Val(4), Null(1)
-# Total Payload to read after RX: 12 bytes
-PACKET_SIZE = 14 
-PAYLOAD_SIZE = 12
+# Fixed Header: 'R'(1) + 'X'(1) + Addr(2) + Count(1)
+HEADER_SIZE = 5
+# Per reading: Type(1) + TS(4) + Val(4)
+READING_SIZE = 9
 
 SENSOR_TYPES = {
     0: "COUNTER",
@@ -32,61 +29,73 @@ def find_gateway_port():
             return port.device
     return None
 
-def process_packet(data):
-    """
-    Unpacks binary data:
-    < : Little Endian
-    H : unsigned short (2 bytes) - Address
-    B : unsigned char (1 byte)   - Type
-    I : unsigned int (4 bytes)   - Timestamp
-    i : signed int (4 bytes)     - Value
-    x : pad byte (1 byte)        - Null terminator
-    """
-    try:
-        addr, s_type, ts, val = struct.unpack('<HBIix', data)
+def process_batch(addr, count, data):
+    timestamp_str = datetime.now().strftime("%H:%M:%S")
+    print(f"[{timestamp_str}] Batch from Node 0x{addr:04X} ({count} readings):")
+
+    offset = 0
+    for i in range(count):
+        if offset + READING_SIZE > len(data):
+            print("  [Error] Incomplete data")
+            break
+            
+        # Unpack one reading
+        # B: Type, I: TS, i: Value
+        chunk = data[offset : offset + READING_SIZE]
+        s_type, ts, val = struct.unpack('<BIi', chunk)
         
         sensor_name = SENSOR_TYPES.get(s_type, f"TYPE_{s_type}")
         display_val = val
-
         if sensor_name == "TEMP (C)" or sensor_name == "HUMIDITY (%)":
             display_val = f"{val / 100.0:.2f}"
 
-        timestamp_str = datetime.now().strftime("%H:%M:%S")
-        print(f"[{timestamp_str}] Node 0x{addr:04X} | {sensor_name:<12} | Val: {display_val:<8} | MeshTS: {ts}")
-
-    except struct.error as e:
-        print(f"Error unpacking: {e}")
+        print(f"  #{i+1}: {sensor_name:<12} | Val: {display_val:<8} | MeshTS: {ts}")
+        
+        offset += READING_SIZE
 
 def main():
     print("Searching for Mesh Gateway...")
     port = find_gateway_port()
     
     if not port:
-        print(f"No device found with VID:0x{DEVICE_VID:04X} PID:0x{DEVICE_PID:04X}")
+        print("Device not found.")
         return
 
-    print(f"Connected to {port}. Listening for binary data...")
+    print(f"Connected to {port}. Listening...")
     
     try:
         ser = serial.Serial(port, BAUD_RATE, timeout=0.1)
         
         while True:
-            # Simple State Machine to find 'RX' header
-            byte = ser.read(1)
-            if byte == b'R':
-                byte = ser.read(1)
-                if byte == b'X':
-                    # Header found, read the rest of the packet
-                    payload = ser.read(PAYLOAD_SIZE)
-                    if len(payload) == PAYLOAD_SIZE:
-                        process_packet(payload)
+            # Look for Header 'RX'
+            if ser.read(1) == b'R':
+                if ser.read(1) == b'X':
+                    # Read Address (2 bytes)
+                    addr_bytes = ser.read(2)
+                    if len(addr_bytes) != 2: 
+                        continue
+                    addr = struct.unpack('<H', addr_bytes)[0]
+                    
+                    # Read Count (1 byte)
+                    count_byte = ser.read(1)
+                    if len(count_byte) != 1: 
+                        continue
+                    count = struct.unpack('B', count_byte)[0]
+                    
+                    # Calculate Payload Size
+                    payload_len = count * READING_SIZE
+                    
+                    # Read Payload + Null Terminator
+                    data = ser.read(payload_len + 1)
+                    
+                    if len(data) == payload_len + 1:
+                        # Process (exclude null terminator)
+                        process_batch(addr, count, data[:-1])
                     else:
-                        print("Incomplete packet")
+                        print("Packet incomplete")
                         
-    except serial.SerialException as e:
-        print(f"Serial Error: {e}")
     except KeyboardInterrupt:
-        print("\nStopping")
+        pass
     finally:
         if 'ser' in locals() and ser.is_open:
             ser.close()

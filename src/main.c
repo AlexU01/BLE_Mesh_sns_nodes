@@ -21,8 +21,17 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 // TODO: Remove this counter once data is available from sensors
 static uint32_t app_counter = 0;
-static struct k_work send_work;
+static struct k_work_delayable send_work;
 static struct gpio_callback btn_cb;
+
+#define SNS_READ_INTERVAL_MS 20000
+#define SNS_THREAD_STACK_SIZE 1024
+#define SNS_THREAD_PRIORITY 7
+#define SNS_Q_SIZE MAX_BATCH_SIZE
+K_MSGQ_DEFINE(sns_msg_q, sizeof(struct sensor_message), SNS_Q_SIZE, 4);
+
+// Semaphore for the thread reading the sensors
+K_SEM_DEFINE(sample_sem, 0, 1);
 
 // Get devicetree node identifiers for LEDs and buttons
 #define LED0_NODE DT_ALIAS(led0)
@@ -63,14 +72,13 @@ static const struct gpio_dt_spec btns[] = {
     GPIO_DT_SPEC_GET(BTN3_NODE, gpios)
 };
 
-static void button_handler(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
-{
+static void button_handler(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
     // Check if any of the buttons has triggered this interrupt
     // All buttons are on GPIO Port 0, so it's safe to check *dev against a single button
     if (dev == btns[0].port) {
         if (pins & BIT(btns[0].pin)) {
             // Pressing btn0 (Button 1 on the board) publishes stored data
-            k_work_submit(&send_work);
+            k_sem_give(&sample_sem);
         }
     }
 }
@@ -84,8 +92,7 @@ static volatile bool is_usb_conn = false;
 // Get the CDC ACM UART device from the Overlay
 const struct device *usb_uart_dev = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
 
-static void gateway_data_handler(const uint8_t *data, const uint8_t len)
-{
+static void gateway_data_handler(const uint8_t *data, const uint8_t len) {
     if (!is_usb_conn || !device_is_ready(usb_uart_dev)) {
         return;
     }
@@ -95,13 +102,11 @@ static void gateway_data_handler(const uint8_t *data, const uint8_t len)
     }
 }
 
-static void provisioning_complete(uint16_t net_idx, uint16_t addr)
-{
+static void provisioning_complete(uint16_t net_idx, uint16_t addr) {
     LOG_INF("Provisioning complete! NetIdx: 0x%04x, Address: 0x%04x", net_idx, addr);
 }
 
-static void provisioning_reset(void)
-{
+static void provisioning_reset(void) {
     // Connection settings should be wiped by the stack when a node is reset by the provisioner
     // Rebooting should ensure that advertising starts from a clean state
     // TODO: Add network core force off before reboot if there are issues with peripherals after a restart.
@@ -115,27 +120,7 @@ static const struct bt_mesh_prov prov = {
     .reset = provisioning_reset,
 };
 
-// Work item to offload sending from the button interrupt handler
-static void send_work_handler(struct k_work *work)
-{
-    struct sensor_message msg;
-
-    app_counter++;
-    msg.timestamp = k_uptime_get_32();
-
-    if (app_counter % 2 == 0) {
-        msg.type = SENSOR_TYPE_TEMP_C;
-        msg.value = 2450;
-    } else {
-        msg.type = SENSOR_TYPE_COUNTER;
-        msg.value = app_counter;
-    }
-
-    model_handler_send(&msg);
-}
-
-static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *param)
-{
+static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *param) {
     switch (cb_status) {
         case USB_DC_CONNECTED: 
             LOG_INF("USB Power");
@@ -163,6 +148,100 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
         default:
             ;
             break;
+    }
+}
+
+static void enq_reading(struct k_msgq *q, const struct sensor_message *sm) {
+    // TODO: Revisit and evaluate if 20ms of wait time is an acceptable value 
+    int err = k_msgq_put(q, sm, K_MSEC(20));
+    if (err == -ENOMSG || err == -EAGAIN) {
+        // Queue is probably full. Remove an element and try again
+        struct sensor_message temp;
+        k_msgq_get(q, &temp, K_MSEC(50));
+        if (k_msgq_put(q, sm, K_MSEC(200))) {
+            LOG_WRN("Unable to add reading to queue");
+        }
+        else {
+            LOG_DBG("Queue full, overwrote old sample");
+        }
+    } else {
+        LOG_DBG("Sample enqueued. Count: %u", k_msgq_num_used_get(q));
+    }
+}
+
+// Function that reads sensors (simulated for now) and adds received values to a queue of readings
+static void gen_samples_and_enq(void) {
+    static struct sensor_message msg;
+
+    app_counter++;
+    msg.timestamp = k_uptime_get_32();
+
+    // Generate a counter reading
+    msg.type = SENSOR_TYPE_COUNTER;
+    msg.value = app_counter;
+    // Try to queue message
+    enq_reading(&sns_msg_q, &msg);
+
+    // Generate a temperature or humidity reading
+    if (app_counter % 2) {
+        msg.type = SENSOR_TYPE_TEMP_C;
+        msg.value = 2450 + (app_counter % 50); // For some variation in the values
+        if (app_counter % 8) {
+            msg.value = -msg.value;
+        }
+    } else {
+        msg.type = SENSOR_TYPE_HUMID_PC;
+        msg.value = 50 + (10 - (app_counter % 21));
+    }
+    enq_reading(&sns_msg_q, &msg);
+}
+
+// Thread that reads sensors periodically
+static void sns_thread_f(void *p1, void *p2, void *p3) {
+    int ret = 0;
+    while (1) {
+        ret = k_sem_take(&sample_sem, K_MSEC(SNS_READ_INTERVAL_MS));
+        gen_samples_and_enq();
+
+        if (ret == 0) {
+            // Semaphore was taken successfully (triggered by button) - publish messages
+            k_work_reschedule(&send_work, K_NO_WAIT);
+        }
+    }
+}
+
+K_THREAD_DEFINE(sns_thread, SNS_THREAD_STACK_SIZE, sns_thread_f, 
+                NULL, NULL, NULL, SNS_THREAD_PRIORITY, 0, 0);
+
+// Work item to offload sending from the button interrupt handler
+static void send_work_handler(struct k_work *work) {
+    // Peek to check if there is data to process
+    while (k_msgq_num_used_get(&sns_msg_q) > 0) {
+        
+        struct sensor_message batch[MAX_BATCH_SIZE];
+        uint8_t count = 0;
+
+        // Prepare Batch
+        while (count < MAX_BATCH_SIZE && k_msgq_get(&sns_msg_q, &batch[count], K_MSEC(10)) == 0) {
+            count++;
+        }
+
+        if (count) {
+            int err = model_handler_send(batch, count);
+            
+            if (err == -EBUSY) {
+                LOG_WRN("Mesh stack busy (err %d), requeueing and rescheduling...", err);
+                for (uint8_t i = 0; i < count; i++) {
+                    k_msgq_put(&sns_msg_q, &(batch[i]), K_MSEC(10));
+                }
+                k_work_reschedule(&send_work, K_SECONDS(1));
+                return;
+            } 
+            
+            if (err) {
+                LOG_ERR("Batch send failed %d", err);
+            }
+        }
     }
 }
 
@@ -243,7 +322,7 @@ int main(void)
 	}
 
     // Init work queue itme for button press
-    k_work_init(&send_work, send_work_handler);
+    k_work_init_delayable(&send_work, send_work_handler);
 
     err = bt_enable(NULL);
     if (err) {

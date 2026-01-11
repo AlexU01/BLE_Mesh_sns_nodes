@@ -10,6 +10,9 @@
 // Custom OpCode: 3-byte header for Vendor Models (C0 | ID) + Company ID
 #define BT_MESH_MODEL_OP_MESSAGE BT_MESH_MODEL_OP_3(0x01, TEST_VND_COMPANY_ID)
 
+// Maximum amount of readings in a single transmission
+#define MAX_BATCH_SIZE 10
+
 // Callback type for sending data strings to the Gateway
 typedef void (*gateway_data_cb_t)(const uint8_t *data_buf, const uint8_t len);
 
@@ -37,21 +40,26 @@ struct sensor_message {
     int32_t value;
 };
 #define SENSOR_PAYLOAD_LEN (sizeof(uint8_t) + sizeof(uint32_t) + sizeof(int32_t))
+// Minimum length of over the air message - 1 byte for count + 1 sensor reading
+#define MIN_SNS_MSG_LEN (1 + SENSOR_PAYLOAD_LEN)
+#define MAX_SNS_MSG_LEN (1 + (MAX_BATCH_SIZE * SENSOR_PAYLOAD_LEN))
 
 // Mesh model composition
 extern const struct bt_mesh_comp comp;
 
 /**
  * @brief Initialize the mesh model subsystem
+ * @param _mdl_cbs Struct containing function pointers to the callback implementations
+ * @return 0 on success, negative error code otherwise
  */
-// int model_handler_init(gateway_data_cb_t _gw_cb, led_control_cb_t _led_cb);
 int model_handler_init(const struct model_cbs _mdl_cbs);
 
 /**
  * @brief Send a structured sensor message
- * @param msg Pointer to the message struct
+ * @param msgs Array of sensor messages
+ * @param count Number of messages in the array
  * @return 0 on success, or negative error code
  */
-int model_handler_send(struct sensor_message *msg);
+int model_handler_send(struct sensor_message *msgs, uint8_t count);
 
 #endif /* MODEL_HANDLER_H__ */
