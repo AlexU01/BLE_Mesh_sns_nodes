@@ -70,116 +70,22 @@ static int handle_message(const struct bt_mesh_model *model,
                           struct bt_mesh_msg_ctx *ctx,
                           struct net_buf_simple *buf)
 {
-    // static struct sensor_message sm = {0};
-    // static uint8_t usb_buf[20] = {0};
+    uint8_t gw_buf[MAX_SNS_MSG_LEN];
 
-    // // Verify that message has correct size
-    // if (buf->len < SENSOR_PAYLOAD_LEN) {
-    //     LOG_WRN("Message too short");
-    //     return -EMSGSIZE;
-    // }
+    // Copy received data to a local buffer
+    memcpy(gw_buf, buf->data, buf->len);
 
-    // // Pull the data from the buffer
-    // sm.type      = net_buf_simple_pull_u8(buf);
-    // sm.timestamp = net_buf_simple_pull_le32(buf);
-    // sm.value     = (int32_t)(net_buf_simple_pull_le32(buf));
-
-    // // Ignore messages from current node
-    // if (bt_mesh_model_elem(model)->rt->addr != ctx->addr) {
-    //     // TODO: Loopback has to be treated differently, ideally the gw node should omit publishing measurements and send data straight on the USB
-    //     LOG_INF("RX 0x%04x:, %d, %u, %d", 
-    //             ctx->addr, sm.type, sm.timestamp, sm.value);
-    // }
-
-    // // Send data to GW via USB if a callback was registered
-    // if (mdl_cbs.gw_cb) {
-    //     /*
-    //     * Data is serialized in this format:
-    //     * |'R'|'X'| src_addr | sns_type | ts | value |'\0'|
-    //     */ 
-    //     uint8_t offset = 0; 
-    //     // Sync chars
-    //     usb_buf[offset++] = 'R';
-    //     usb_buf[offset++] = 'X';
-        
-    //     // Source address
-    //     sys_put_le16(ctx->addr, usb_buf+offset);
-    //     offset += sizeof(ctx->addr);
-        
-    //     // Sensor type (8bit)
-    //     usb_buf[offset++] = sm.type;
-
-    //     // Timestamp
-    //     sys_put_le32(sm.timestamp, usb_buf+offset);
-    //     offset += sizeof(sm.timestamp);
-
-    //     // Sensor value
-    //     sys_put_le32((uint32_t)sm.value, usb_buf+offset);
-    //     offset += sizeof(sm.value);
-        
-    //     // End char
-    //     usb_buf[offset++] = '\0';
-
-    //     mdl_cbs.gw_cb(usb_buf, offset); // 'offset' also represents the number of bytes written at this point
-    // }
-
-    // return 0;
-    static uint8_t count = 0;
-    static uint8_t usb_buf[MAX_SNS_MSG_LEN + 10]; // Buffer for central, should be large enough to fit incoming message + serial protocol overhead
-
-    // Extract count from buffer
-    count = net_buf_simple_pull_u8(buf);
-    
     // Ignore messages from current node
+    // First byte of the message is always the count (number of readings received)
     if (bt_mesh_model_elem(model)->rt->addr == ctx->addr) {
-        LOG_INF("Received own message (count: %d)", count);
+        LOG_INF("Received own message (count: %d)", gw_buf[0]);
     } else {
-        LOG_INF("RX Batch from 0x%04x (count: %d)", ctx->addr, count);
+        LOG_INF("RX Batch from 0x%04x (count: %d)", ctx->addr, gw_buf[0]);
     }
 
-    if (mdl_cbs.gw_cb) {
-        size_t offset = 0;
-        struct sensor_message sm;
-
-        // Add sync bytes
-        usb_buf[offset++] = 'R';
-        usb_buf[offset++] = 'X';
-
-        // Add sender address
-        sys_put_le16(ctx->addr, &(usb_buf[offset]));
-        offset += sizeof(ctx->addr);
-
-        // Add sensor readings count
-        usb_buf[offset++] = count; 
-
-        // Extract readings from buffer
-        uint8_t i;
-        for (i = 0; i < count; i++) {
-            // Check if buffer contains enough data for a full reading
-            if (buf->len < SENSOR_PAYLOAD_LEN)
-                break;
-            
-            sm.type = net_buf_simple_pull_u8(buf);
-            sm.timestamp = net_buf_simple_pull_le32(buf);
-            sm.value = (int32_t)net_buf_simple_pull_le32(buf);
-
-            // Pack data into usb buffer
-            usb_buf[offset++] = sm.type;
-            sys_put_le32(sm.timestamp, &usb_buf[offset]); 
-            offset += sizeof(sm.timestamp);
-            sys_put_le32((uint32_t)sm.value, &usb_buf[offset]); 
-            offset += sizeof(sm.value);
-        }
-
-        // Adjust count in usb_buf if the received buffer was incomplete
-        if (i != count) {
-            LOG_WRN("Received incomplete message");
-            usb_buf[4] -= (count - i);
-        }
-
-        usb_buf[offset++] = '\0';
-        mdl_cbs.gw_cb(usb_buf, offset);
-    }
+    // Send data to be processed if the node acts as gateway
+    if (mdl_cbs.gw_cb)
+        mdl_cbs.gw_cb(gw_buf, buf->len, ctx->addr);
 
     return 0;
 }

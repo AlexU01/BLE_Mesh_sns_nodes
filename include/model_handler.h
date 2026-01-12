@@ -13,15 +13,23 @@
 // Maximum amount of readings in a single transmission
 #define MAX_BATCH_SIZE 10
 
-// Callback type for sending data strings to the Gateway
-typedef void (*gateway_data_cb_t)(const uint8_t *data_buf, const uint8_t len);
+// Callback type for sending data to the Gateway
+typedef void (*gateway_data_cb_t)(const uint8_t *data_buf, const uint8_t len, const uint16_t addr);
 
 // Callback for LED control
 typedef void (*led_control_cb_t)(uint32_t led_mask);
 
 // Structure to hold and pass the callbacks
 struct model_cbs {
+    /**
+     * This callback is used by all nodes whenever a packet is received, but it only has an effect
+     * if the node also acts as a gateway (is connected to a host via USB).
+     */
     gateway_data_cb_t gw_cb;
+
+    /**
+     * Callback used by the health server to blink the LEDs during provisioning.
+     */
     led_control_cb_t led_cb;
 };
 

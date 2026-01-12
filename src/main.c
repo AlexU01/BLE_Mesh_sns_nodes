@@ -92,13 +92,31 @@ static volatile bool is_usb_conn = false;
 // Get the CDC ACM UART device from the Overlay
 const struct device *usb_uart_dev = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
 
-static void gateway_data_handler(const uint8_t *data, const uint8_t len) {
+static void gateway_data_handler(const uint8_t *data, const uint8_t len, const uint16_t addr) {
     if (!is_usb_conn || !device_is_ready(usb_uart_dev)) {
         return;
     }
 
-    for (uint8_t i = 0; i < len; i++) {
-        uart_poll_out(usb_uart_dev, data[i]);
+    uint8_t usb_buf[MAX_SNS_MSG_LEN + 10]; // Buffer for central, should be large enough to fit incoming message + serial protocol overhead
+    
+    // Copy the data into local buffer
+    // The 4 byte offset is to leave space for the protocol header 
+    memcpy(usb_buf+4, data, len);
+    
+    // Add sync bytes
+    usb_buf[0] = 'R';
+    usb_buf[1] = 'X';
+    
+    // Add sender address
+    usb_buf[2] = (uint8_t)(addr >> 8); // Extract high byte
+    usb_buf[3] = (uint8_t)(addr & 0xFF); // Extract low byte
+    
+    // Add end byte
+    usb_buf[4+len] = '\0';
+
+    // Send data over USB
+    for (uint8_t i = 0; i < 4+len+1; i++) {
+        uart_poll_out(usb_uart_dev, usb_buf[i]);
     }
 }
 
