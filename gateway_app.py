@@ -1,11 +1,14 @@
 import sys
+import os
 import serial
 import serial.tools.list_ports
 import struct
 import sqlite3 as sql
+import keyring # pip install keyring
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QPlainTextEdit, QLabel, QPushButton, QHBoxLayout)
+                             QHBoxLayout, QPlainTextEdit, QLabel, QPushButton,
+                             QDialog, QLineEdit, QMessageBox)
 from PyQt6.QtCore import QThread, pyqtSignal
 
 # --- Configuration ---
@@ -13,6 +16,10 @@ DEVICE_VID = 0x1915
 DEVICE_PID = 0x5301
 BAUD_RATE = 115200
 DB_NAME = "sensor_data.db"
+
+# Security Config
+KEYRING_SERVICE = "MeshGatewayApp"
+KEYRING_USER = "admin"
 
 # Protocol Constants
 HEADER_SIZE = 5     # 'R', 'X', Addr(2), Count(1)
@@ -25,11 +32,56 @@ SENSOR_TYPES = {
     3: "BATTERY (mV)"
 }
 
+# Login Dialog
+class LoginDialog(QDialog):
+    def __init__(self, mode="login"):
+        super().__init__()
+        self.mode = mode
+        self.setWindowTitle("Login" if mode == "login" else "Setup Password")
+        self.setFixedSize(300, 120)
+        self.password = None
+
+        layout = QVBoxLayout()
+
+        # Instruction Label
+        if mode == "login":
+            lbl = QLabel("Enter Admin Password:")
+        else:
+            lbl = QLabel("Set New Admin Password:")
+        layout.addWidget(lbl)
+
+        # Password Input
+        self.input_pwd = QLineEdit()
+        self.input_pwd.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self.input_pwd)
+
+        # Buttons
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("OK")
+        btn_ok.clicked.connect(self.accept_input)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+        self.setLayout(layout)
+
+    def accept_input(self):
+        pwd = self.input_pwd.text()
+        if not pwd:
+            QMessageBox.warning(self, "Error", "Password cannot be empty.")
+            return
+        self.password = pwd
+        self.accept()
+
+# Database Manager
 class DatabaseManager:
     def __init__(self, db_name):
         self.db_name = db_name
         self.init_db()
-    
+
     def init_db(self):
         # Create the table if it doesn't exist
         conn = sql.connect(self.db_name)
@@ -58,7 +110,7 @@ class DatabaseManager:
         for r in readings:
             # (node_addr, sensor_type, value, mesh_timestamp)
             data_rows.append((addr, r['type'], r['val'], r['ts']))
-        
+
         cursor.executemany('''
             INSERT INTO readings (node_addr, sensor_type, value, mesh_timestamp)
             VALUES (?, ?, ?, ?)
@@ -66,7 +118,7 @@ class DatabaseManager:
         
         conn.commit()
         conn.close()
-    
+
     def get_count(self):
         # Returns total number of rows in the table
         conn = sql.connect(self.db_name)
@@ -75,7 +127,7 @@ class DatabaseManager:
         count = cursor.fetchone()[0]
         conn.close()
         return count
-    
+
     def clear_db(self):
         # Deletes all rows and returns the number of deleted rows
         conn = sql.connect(self.db_name)
@@ -288,17 +340,72 @@ class MainWindow(QMainWindow):
         self.log_area.appendPlainText(f">>> Database contains {count} entries.")
 
     def clear_db_data(self):
-        deleted = self.db.clear_db()
-        self.log_area.appendPlainText(f">>> Database cleared. Removed {deleted} entries.")
+        reply = QMessageBox.question(self, 'Confirm Delete', 
+                                     'Are you sure you want to clear the entire database?',
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+                                     QMessageBox.StandardButton.No)
+
+        if reply == QMessageBox.StandardButton.Yes:
+            deleted = self.db.clear_db()
+            self.log_area.appendPlainText(f">>> Database cleared. Removed {deleted} entries.")
 
     def closeEvent(self, event):
-        """Cleanup thread on window close"""
+        # Cleanup thread on window close
         if self.worker:
             self.worker.stop()
         event.accept()
 
-if __name__ == "__main__":
+def run_app():
     app = QApplication(sys.argv)
+
+    # Check for stored credentials
+    stored_pwd = keyring.get_password(KEYRING_SERVICE, KEYRING_USER)
+    
+    # Tamper Detection
+    if stored_pwd is None:
+        # No password found. Check if DB exists.
+        if os.path.exists(DB_NAME):
+            # DB exists but password is gone. 
+            # This means someone deleted the credentials to bypass the lock.
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("Security Alert")
+            msg.setText("Credentials are missing, but a database exists.\nTo prevent unauthorized access, the database will be deleted.")
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+            ret = msg.exec()
+
+            if ret == QMessageBox.StandardButton.Ok:
+                try:
+                    os.remove(DB_NAME)
+                    QMessageBox.information(None, "Reset", "Database deleted. A new password may be set.")
+                except OSError as e:
+                    QMessageBox.critical(None, "Error", f"Failed to delete DB: {e}")
+                    sys.exit(1)
+            else:
+                sys.exit(0) # User refused to delete, exit.
+
+        # Show Setup Dialog
+        dlg = LoginDialog(mode="setup")
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            keyring.set_password(KEYRING_SERVICE, KEYRING_USER, dlg.password)
+            QMessageBox.information(None, "Success", "Password set successfully.")
+        else:
+            sys.exit(0) # Setup cancelled
+
+    else:
+        # Password exists, show Login Dialog
+        dlg = LoginDialog(mode="login")
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            if dlg.password != stored_pwd:
+                QMessageBox.warning(None, "Access Denied", "Incorrect Password.")
+                sys.exit(0)
+        else:
+            sys.exit(0) # Login cancelled
+
+    # Launch Main Window
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
+
+if __name__ == "__main__":
+    run_app()

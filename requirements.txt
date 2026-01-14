@@ -1,0 +1,4 @@
+keyring==25.7.0
+PyQt6==6.10.2
+pyqt6_sip==13.11.0
+pyserial==3.5
