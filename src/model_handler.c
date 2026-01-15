@@ -9,10 +9,13 @@ LOG_MODULE_REGISTER(model_handler, LOG_LEVEL_INF);
 // Define the Health Pub model and Attention callbacks 
 static struct k_work_delayable attention_blink_work;
 static bool attention;
+static uint16_t central_addr = 0x0;
+static bool i_am_central = false
+static bool i_can_be_central = false;
 
 static struct model_cbs mdl_cbs = {
     .gw_cb = NULL,
-    .led_cb = NULL
+    .led_cb = NULL,
 };
 
 static void attention_blink(struct k_work *work) {
@@ -57,10 +60,10 @@ BT_MESH_HEALTH_PUB_DEFINE(health_pub, 0);
 
 /** 
  * Publication context - required for the model to send messages
- * Buffer length is set to 1 byte since messages will be stored in
- * a different buffer when being published.
+ * Buffer can hold a payload of 2 bytes for sync and control messages.
+ * Sensor readings are published using a different buffer.
  */
-BT_MESH_MODEL_PUB_DEFINE(vnd_pub, NULL, 1);
+BT_MESH_MODEL_PUB_DEFINE(vnd_pub, NULL, BT_MESH_MODEL_BUF_LEN(BT_MESH_MODEL_OP_BLOB_XFER_ID, 2));
 
 // Message handlers
 /**
@@ -88,6 +91,35 @@ static int handle_message(const struct bt_mesh_model *model,
         mdl_cbs.gw_cb(gw_buf, buf->len, ctx->addr);
 
     return 0;
+}
+
+static int handle_est_central(const struct bt_mesh_model *model,
+                          struct bt_mesh_msg_ctx *ctx,
+                          struct net_buf_simple *buf) {
+    if (central_addr != 0x0) {
+        LOG_INF("A central node already exists, address will not be updated");
+    } else {
+        central_addr = ctx->addr;
+        LOG_INF("Central has been established as 0x%04x", central_addr);
+    }
+    return 0;
+}
+
+static int handle_cancel_central(const struct bt_mesh_model *model,
+                            struct bt_mesh_msg_ctx *ctx,
+                            struct net_buf_simple *buf) {
+    central_addr = 0x0
+
+    if (i_can_be_central) {
+        // Generate a random delay before publishing an attempt to become central
+        uint8_t rnd;
+        bt_rand(&rnd, 1);
+        k_msleep(rnd);
+        
+        bt_mesh_model_msg_init(vnd_pub.msg, BT_MESH_MODEL_OP_EST_CENTRAL);
+        net_buf_simple_add_le16(vnd_pub.msg, 0);
+        int err = bt_mesh_model_publish(vnd_models);
+    }
 }
 
 /**
@@ -177,4 +209,48 @@ int model_handler_send(struct sensor_message *msgs, uint8_t count) {
     };
 
     return bt_mesh_model_send(vnd_models, &ctx, &msg, NULL, NULL);
+}
+
+int model_handler_est_central(void) {
+    // Remember that this node can now act as a central if needed;
+    i_can_be_central = true;
+
+    if (vnd_pub.addr == BT_MESH_ADDR_UNASSIGNED) {
+        LOG_WRN("Publication address not set! Provision and configure the node first.");
+        return -EADDRNOTAVAIL;
+    }
+
+    if (central_addr == 0x0)
+        i_am_central = true;
+
+    // No data to transmit, but message buffer must be initialized with op code
+    bt_mesh_model_msg_init(vnd_pub.msg, BT_MESH_MODEL_OP_EST_CENTRAL);
+    net_buf_simple_add_le16(vnd_pub.msg, 0);
+    int err = bt_mesh_model_publish(vnd_models);
+    if (err) {
+        LOG_ERR("Failed to publish (err %d)", err);
+    }
+
+    return err;
+}
+
+int model_handler_cancel_central(void) {
+    int err = 0;
+    i_can_be_central = false;
+
+    // If this node was disconnected from the USB while acting as central,
+    // it should announce to the other nodes that it can no longer be central
+    if (i_am_central) {
+        i_am_central = false;
+        central_address = 0x0;
+        // No data to transmit, but message buffer must be initialized with op code
+        bt_mesh_model_msg_init(vnd_pub.msg, BT_MESH_MODEL_OP_CANCEL_CENTRAL);
+        net_buf_simple_add_le16(vnd_pub.msg, 0);
+        int err = bt_mesh_model_publish(vnd_models);
+        if (err) {
+            LOG_ERR("Failed to publish (err %d)", err);
+        }
+    }
+
+    return err;
 }

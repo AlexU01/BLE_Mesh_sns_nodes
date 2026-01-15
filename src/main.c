@@ -15,6 +15,10 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/devicetree.h>
+#include <pm_config.h>
+#include <zephyr/drivers/flash.h>
+#include <zephyr/storage/flash_map.h>
 #include "model_handler.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -23,6 +27,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 static uint32_t app_counter = 0;
 static struct k_work_delayable send_work;
 static struct gpio_callback btn_cb;
+static enum usb_dc_status_code current_usb_status = USB_DC_DISCONNECTED;
 
 #define SNS_READ_INTERVAL_MS 20000
 #define SNS_THREAD_STACK_SIZE 1024
@@ -54,6 +59,11 @@ static const struct gpio_dt_spec leds[] = {
 #define USB_CONN_LED (leds[0])
 #define LED_ON       1
 #define LED_OFF      0
+
+#define SPI_FLASH_SECTOR_SIZE  CONFIG_NORDIC_QSPI_NOR_FLASH_LAYOUT_PAGE_SIZE
+#define FLASH_PARTITION_ID     PM_LARGE_DATA_STORAGE_ID
+#define FLASH_PARTITION_OFFSET PM_LARGE_DATA_STORAGE_OFFSET
+const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(nordic_pm_ext_flash));
 
 // Function that will be passed as cb to model_handler
 static void led_control(uint32_t led_mask) {
@@ -139,6 +149,7 @@ static const struct bt_mesh_prov prov = {
 };
 
 static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *param) {
+    current_usb_status = cb_status;
     switch (cb_status) {
         case USB_DC_CONNECTED: 
             LOG_INF("USB Power");
@@ -147,21 +158,25 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
             LOG_INF("USB Configured");
             is_usb_conn = true;
             gpio_pin_set_dt(&USB_CONN_LED, LED_ON);
+            model_handler_est_central();
             break;
         case USB_DC_RESUME:
             LOG_INF("USB Resumed");
             is_usb_conn = true;
             gpio_pin_set_dt(&USB_CONN_LED, LED_ON);
+            model_handler_est_central();
             break;
         case USB_DC_DISCONNECTED:
             LOG_INF("USB Disconnected");
             is_usb_conn = false;
             gpio_pin_set_dt(&USB_CONN_LED, LED_OFF);
+            model_handler_cancel_central();
             break;
         case USB_DC_SUSPEND:
             LOG_INF("USB Disconnected");
             is_usb_conn = false;
             gpio_pin_set_dt(&USB_CONN_LED, LED_OFF);
+            model_handler_cancel_central();
             break;
         default:
             ;
@@ -318,6 +333,11 @@ int main(void)
 			return err;
 		}
     }
+
+    if (!device_is_ready(flash_dev)) {
+		printk("%s: device not ready.\n", flash_dev->name);
+		return 0;
+	}
 
     err = model_handler_init((struct model_cbs) {.gw_cb = gateway_data_handler, .led_cb = led_control});
     if (err) {

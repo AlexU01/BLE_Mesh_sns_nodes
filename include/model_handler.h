@@ -9,6 +9,8 @@
 
 // Custom OpCode: 3-byte header for Vendor Models (C0 | ID) + Company ID
 #define BT_MESH_MODEL_OP_MESSAGE BT_MESH_MODEL_OP_3(0x01, TEST_VND_COMPANY_ID)
+#define BT_MESH_MODEL_OP_EST_CENTRAL BT_MESH_MODEL_OP_3(0x02, TEST_VND_COMPANY_ID)
+#define BT_MESH_MODEL_OP_CANCEL_CENTRAL BT_MESH_MODEL_OP_3(0x03, TEST_VND_COMPANY_ID)
 
 // Maximum amount of readings in a single transmission
 #define MAX_BATCH_SIZE 10
@@ -69,5 +71,16 @@ int model_handler_init(const struct model_cbs _mdl_cbs);
  * @return 0 on success, or negative error code
  */
 int model_handler_send(struct sensor_message *msgs, uint8_t count);
+
+/**
+ * @brief Establish if a node becomes a central when it's connected to a USB port
+ * @return 0 on success or negative error code
+ */
+int model_handler_est_central(void);
+
+/**
+ * @brief Called when a node is disconnected from its USB host to cancel its status as a central;
+ */
+void model_handler_cancel_central(void);
 
 #endif /* MODEL_HANDLER_H__ */
