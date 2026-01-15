@@ -1,0 +1,21 @@
+# Add this if DFU is active
+# mcuboot_secondary:
+#   address: 0x0
+#   device: DT_CHOSEN(nordic_pm_ext_flash)
+#   end_address: 0xd8000
+#   placement:
+#     align:
+#       start: 0x4
+#   region: external_flash
+#   share_size:
+#   - mcuboot_primary
+#   size: 0xd8000
+
+data_storage:
+  address: 0x0
+  # Switch to 0xd8000 address for data_storage if using DFU
+  # address: 0xd8000
+  region: external_flash
+  size: 0x8000
+  placement:
+    after: [mcuboot_secondary]
