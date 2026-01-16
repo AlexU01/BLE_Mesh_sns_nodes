@@ -28,6 +28,7 @@ static uint32_t app_counter = 0;
 static struct k_work_delayable send_work;
 static struct gpio_callback btn_cb;
 static enum usb_dc_status_code current_usb_status = USB_DC_DISCONNECTED;
+static bool is_central = false;
 
 #define SNS_READ_INTERVAL_MS 20000
 #define SNS_THREAD_STACK_SIZE 1024
@@ -57,6 +58,7 @@ static const struct gpio_dt_spec leds[] = {
 };
 
 #define USB_CONN_LED (leds[0])
+#define CENTRAL_LED  (leds[1])
 #define LED_ON       1
 #define LED_OFF      0
 
@@ -101,6 +103,25 @@ static volatile bool is_usb_conn = false;
 
 // Get the CDC ACM UART device from the Overlay
 const struct device *usb_uart_dev = DEVICE_DT_GET(DT_NODELABEL(cdc_acm_uart0));
+
+static void uart_rx_cb(const struct device *dev, void *user_data) {
+    if (!uart_irq_update(dev)) {
+        return;
+    }
+
+    if (uart_irq_rx_ready(dev)) {
+        uint8_t c;
+        while (uart_fifo_read(dev, &c, 1) == 1) {
+            // Simple command parse - receiving 'C' lets the node know it's now the central
+            if (c == 'C') {
+                LOG_INF("Received 'Set Central'");
+                model_handler_est_central();
+                gpio_pin_set_dt(&CENTRAL_LED, LED_ON);
+                is_central = true;
+            }
+        }
+    }
+}
 
 static void gateway_data_handler(const uint8_t *data, const uint8_t len, const uint16_t addr) {
     if (!is_usb_conn || !device_is_ready(usb_uart_dev)) {
@@ -158,25 +179,45 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
             LOG_INF("USB Configured");
             is_usb_conn = true;
             gpio_pin_set_dt(&USB_CONN_LED, LED_ON);
-            model_handler_est_central();
+            
+            // Start listening for 'Set Central' command
+            uart_irq_rx_enable(usb_uart_dev);
+            // model_handler_est_central();
             break;
         case USB_DC_RESUME:
             LOG_INF("USB Resumed");
             is_usb_conn = true;
             gpio_pin_set_dt(&USB_CONN_LED, LED_ON);
-            model_handler_est_central();
+            uart_irq_rx_enable(usb_uart_dev);
+            // model_handler_est_central();
             break;
         case USB_DC_DISCONNECTED:
             LOG_INF("USB Disconnected");
             is_usb_conn = false;
             gpio_pin_set_dt(&USB_CONN_LED, LED_OFF);
-            model_handler_cancel_central();
+            gpio_pin_set_dt(&CENTRAL_LED, LED_OFF);
+
+            // Stop listening to USB port
+            uart_irq_rx_disable(usb_uart_dev);
+            // Let the other devices know this node is no longer a central
+            if (is_central) {
+                gpio_pin_set_dt(&CENTRAL_LED, LED_OFF);
+                is_central = false;
+                model_handler_cancel_central();
+            }
             break;
         case USB_DC_SUSPEND:
             LOG_INF("USB Disconnected");
             is_usb_conn = false;
             gpio_pin_set_dt(&USB_CONN_LED, LED_OFF);
-            model_handler_cancel_central();
+            gpio_pin_set_dt(&CENTRAL_LED, LED_OFF);
+            
+            uart_irq_rx_disable(usb_uart_dev);
+            if (is_central) {
+                gpio_pin_set_dt(&CENTRAL_LED, LED_OFF);
+                is_central = false;
+                model_handler_cancel_central();
+            }
             break;
         default:
             ;
@@ -350,6 +391,9 @@ int main(void)
         return -ENODEV;
     }
 
+    // Configure UART Interrupt Callback
+    uart_irq_callback_user_data_set(usb_uart_dev, uart_rx_cb, NULL);
+
     // Enable USB stack for DFU and recovery
     if (IS_ENABLED(CONFIG_USB_DEVICE_STACK)) {
 		int err = usb_enable(usb_status_cb);
@@ -406,6 +450,9 @@ int main(void)
     // Turn the USB Conn LED back on if the board is connected to a host
     if (is_usb_conn)
         gpio_pin_set_dt(&USB_CONN_LED, LED_ON);
+    if (is_central)
+        gpio_pin_set_dt(&CENTRAL_LED, LED_ON);
+        
 
     return 0;
 }

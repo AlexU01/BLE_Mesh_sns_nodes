@@ -4,12 +4,12 @@ import serial
 import serial.tools.list_ports
 import struct
 import sqlite3 as sql
-import keyring # pip install keyring
+import keyring
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPlainTextEdit, QLabel, QPushButton,
                              QDialog, QLineEdit, QMessageBox)
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, pyqtSlot
 
 # --- Configuration ---
 DEVICE_VID = 0x1915
@@ -148,10 +148,14 @@ class SerialWorker(QThread):
     data_signal = pyqtSignal(int, list)   # (addr, list of readings)
     status_signal = pyqtSignal(bool, str) # For updating connection status (Connected?, PortName)
 
+    # Internal Signal used to safely trigger writes from the Main Thread context
+    write_signal = pyqtSignal(bytes) 
+
     def __init__(self):
         super().__init__()
         self.running = True
         self.ser = None
+        self.write_signal.connect(self._write_data)
 
     def find_port(self):
         ports = serial.tools.list_ports.comports()
@@ -178,6 +182,9 @@ class SerialWorker(QThread):
                 if self.ser.read(1) == b'R':
                     if self.ser.read(1) == b'X':
                         self.process_packet()
+
+                # Yield slightly to allow signals (like writes) to process
+                self.msleep(5) 
                 
         except serial.SerialException as e:
             self.status_signal.emit(False, "Error")
@@ -186,6 +193,22 @@ class SerialWorker(QThread):
             if self.ser and self.ser.is_open:
                 self.ser.close()
             self.status_signal.emit(False, "Disconnected")
+        
+    @pyqtSlot(bytes)
+    def _write_data(self, data):
+        """
+        Slot to write data to the serial port.
+        This runs in the Worker Thread context when triggered by write_signal.
+        """
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.write(data)
+            except serial.SerialException as e:
+                self.log_signal.emit(f"Write Error: {e}")
+    
+    def send_command(self, cmd_bytes):
+        # Public method to trigger a write safely from the Main Thread.
+        self.write_signal.emit(cmd_bytes)
 
     def process_packet(self):
         try:
@@ -305,6 +328,10 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Status: Connected ({msg})")
             self.status_label.setStyleSheet("font-weight: bold; color: green;")
             self.btn_retry.setEnabled(False)
+
+            # Send 'C' immediately upon connection to tell the node it is Central
+            self.worker.send_command(b'C')
+            self.append_log(">> Assigned CENTRAL role to connected node.")
         else:
             self.status_label.setText(f"Status: Disconnected ({msg})")
             self.status_label.setStyleSheet("font-weight: bold; color: red;")

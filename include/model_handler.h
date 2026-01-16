@@ -80,7 +80,8 @@ int model_handler_est_central(void);
 
 /**
  * @brief Called when a node is disconnected from its USB host to cancel its status as a central;
+ * @return on success or negative error code
  */
-void model_handler_cancel_central(void);
+int model_handler_cancel_central(void);
 
 #endif /* MODEL_HANDLER_H__ */
