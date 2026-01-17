@@ -19,13 +19,14 @@
 #include <pm_config.h>
 #include <zephyr/drivers/flash.h>
 #include <zephyr/storage/flash_map.h>
+#include <zephyr/sys/byteorder.h>
 #include "model_handler.h"
+#include "flash_storage.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 // TODO: Remove this counter once data is available from sensors
 static uint32_t app_counter = 0;
-static struct k_work_delayable send_work;
 static struct gpio_callback btn_cb;
 static enum usb_dc_status_code current_usb_status = USB_DC_DISCONNECTED;
 static bool is_central = false;
@@ -33,11 +34,19 @@ static bool is_central = false;
 #define SNS_READ_INTERVAL_MS 20000
 #define SNS_THREAD_STACK_SIZE 1024
 #define SNS_THREAD_PRIORITY 7
+#define SENDER_THREAD_STACK_SIZE 2048
+#define SENDER_THREAD_PRIORITY 7
+#define ERASE_FLASH_THREAD_STACK_SIZE 1024
+#define ERASE_FLASH_THREAD_PRIORITY 7
 #define SNS_Q_SIZE MAX_BATCH_SIZE
 K_MSGQ_DEFINE(sns_msg_q, sizeof(struct sensor_message), SNS_Q_SIZE, 4);
 
 // Semaphore for the thread reading the sensors
 K_SEM_DEFINE(sample_sem, 0, 1);
+// Semaphore for the thread that handles the queued readings
+K_SEM_DEFINE(send_samples_sem, 0, 1);
+// Semaphore for the thread that calls the erase flash function
+K_SEM_DEFINE(erase_flash_sem, 0, 1);
 
 // Get devicetree node identifiers for LEDs and buttons
 #define LED0_NODE DT_ALIAS(led0)
@@ -62,10 +71,10 @@ static const struct gpio_dt_spec leds[] = {
 #define LED_ON       1
 #define LED_OFF      0
 
-#define SPI_FLASH_SECTOR_SIZE  CONFIG_NORDIC_QSPI_NOR_FLASH_LAYOUT_PAGE_SIZE
-#define FLASH_PARTITION_ID     PM_LARGE_DATA_STORAGE_ID
-#define FLASH_PARTITION_OFFSET PM_LARGE_DATA_STORAGE_OFFSET
-const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(nordic_pm_ext_flash));
+// #define SPI_FLASH_SECTOR_SIZE  CONFIG_NORDIC_QSPI_NOR_FLASH_LAYOUT_PAGE_SIZE
+// #define FLASH_PARTITION_ID     PM_DATA_STORAGE_ID
+// #define FLASH_PARTITION_OFFSET PM_DATA_STORAGE_OFFSET
+// const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(nordic_pm_ext_flash));
 
 // Function that will be passed as cb to model_handler
 static void led_control(uint32_t led_mask) {
@@ -89,8 +98,18 @@ static void button_handler(const struct device *dev, struct gpio_callback *cb, u
     // All buttons are on GPIO Port 0, so it's safe to check *dev against a single button
     if (dev == btns[0].port) {
         if (pins & BIT(btns[0].pin)) {
-            // Pressing btn0 (Button 1 on the board) publishes stored data
+            // Pressing btn0 (Button 1 on the board) generates a new sample
             k_sem_give(&sample_sem);
+        }
+
+        if (pins & BIT(btns[1].pin)) {
+            // Pressing btn1 (Button 2 on the board) handles existing readings stored in queue
+            k_sem_give(&send_samples_sem);
+        }
+
+        if (pins & BIT(btns[2].pin)) {
+            // Pressing btn2 (Button 3 on the board) clears the external flash
+            k_sem_give(&erase_flash_sem);
         }
     }
 }
@@ -124,7 +143,7 @@ static void uart_rx_cb(const struct device *dev, void *user_data) {
 }
 
 static void gateway_data_handler(const uint8_t *data, const uint8_t len, const uint16_t addr) {
-    if (!is_usb_conn || !device_is_ready(usb_uart_dev)) {
+    if (!is_central || !device_is_ready(usb_uart_dev)) {
         return;
     }
 
@@ -192,6 +211,7 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
             // model_handler_est_central();
             break;
         case USB_DC_DISCONNECTED:
+        case USB_DC_SUSPEND:
             LOG_INF("USB Disconnected");
             is_usb_conn = false;
             gpio_pin_set_dt(&USB_CONN_LED, LED_OFF);
@@ -200,19 +220,6 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
             // Stop listening to USB port
             uart_irq_rx_disable(usb_uart_dev);
             // Let the other devices know this node is no longer a central
-            if (is_central) {
-                gpio_pin_set_dt(&CENTRAL_LED, LED_OFF);
-                is_central = false;
-                model_handler_cancel_central();
-            }
-            break;
-        case USB_DC_SUSPEND:
-            LOG_INF("USB Disconnected");
-            is_usb_conn = false;
-            gpio_pin_set_dt(&USB_CONN_LED, LED_OFF);
-            gpio_pin_set_dt(&CENTRAL_LED, LED_OFF);
-            
-            uart_irq_rx_disable(usb_uart_dev);
             if (is_central) {
                 gpio_pin_set_dt(&CENTRAL_LED, LED_OFF);
                 is_central = false;
@@ -268,6 +275,11 @@ static void gen_samples_and_enq(void) {
         msg.value = 50 + (10 - (app_counter % 21));
     }
     enq_reading(&sns_msg_q, &msg);
+
+    // If the queue is almost full, try to empty it
+    if (k_msgq_num_free_get(&sns_msg_q) < 2) {
+        k_sem_give(&send_samples_sem);
+    }
 }
 
 // Thread that reads sensors periodically
@@ -275,49 +287,102 @@ static void sns_thread_f(void *p1, void *p2, void *p3) {
     int ret = 0;
     while (1) {
         ret = k_sem_take(&sample_sem, K_MSEC(SNS_READ_INTERVAL_MS));
+        LOG_INF("Generating samples");
         gen_samples_and_enq();
-
-        if (ret == 0) {
-            // Semaphore was taken successfully (triggered by button) - publish messages
-            k_work_reschedule(&send_work, K_NO_WAIT);
-        }
     }
 }
 
 K_THREAD_DEFINE(sns_thread, SNS_THREAD_STACK_SIZE, sns_thread_f, 
                 NULL, NULL, NULL, SNS_THREAD_PRIORITY, 0, 0);
 
-// Work item to offload sending from the button interrupt handler
-static void send_work_handler(struct k_work *work) {
-    // Peek to check if there is data to process
-    while (k_msgq_num_used_get(&sns_msg_q) > 0) {
-        
-        struct sensor_message batch[MAX_BATCH_SIZE];
-        uint8_t count = 0;
+// Thread to offload sending from the button interrupt handler
+static void sender_thread_f(void *p1, void *p2, void *p3) {
+    int ret = 0, err = 0;
+    struct sensor_message batch[MAX_BATCH_SIZE];
+    uint8_t buf[MAX_SNS_MSG_LEN];
+    
+    while (1) {
+        ret = k_sem_take(&send_samples_sem, K_FOREVER);
 
-        // Prepare Batch
-        while (count < MAX_BATCH_SIZE && k_msgq_get(&sns_msg_q, &batch[count], K_MSEC(10)) == 0) {
-            count++;
+        if (ret) {
+            LOG_ERR("Failed to take send_sample_sem");
+            continue;
         }
 
-        if (count) {
-            int err = model_handler_send(batch, count);
-            
-            if (err == -EBUSY) {
-                LOG_WRN("Mesh stack busy (err %d), requeueing and rescheduling...", err);
-                for (uint8_t i = 0; i < count; i++) {
-                    k_msgq_put(&sns_msg_q, &(batch[i]), K_MSEC(10));
+        // Peek to check if there is data to process
+        while (k_msgq_num_used_get(&sns_msg_q) > 0) { 
+            uint8_t count = 0;
+    
+            // Prepare Batch
+            while (count < MAX_BATCH_SIZE && k_msgq_get(&sns_msg_q, &batch[count], K_MSEC(10)) == 0) {
+                count++;
+            }
+    
+            if (count) {
+                if (is_central) {
+                    // If the node is the central, send data over USB directly
+                    memset(buf, 0, sizeof(buf));
+                    buf[0] = count;
+                    int offset = 1;
+
+                    // Serialize the batch
+                    for (int i = 0; i < count; i++) {
+                        buf[offset++] = batch[i].type;
+
+                        sys_put_le32(batch[i].timestamp, &buf[offset]);
+                        offset += sizeof(batch[i].timestamp);
+
+                        sys_put_le32(batch[i].value, &buf[offset]);
+                        offset += sizeof(batch[i].value);
+                    }
+
+                    gateway_data_handler(buf, offset, get_central_address());
+                } else if (central_exists()) {
+                    // try to send data to central
+                    err = model_handler_send(batch, count);
+                    
+                    if (err == -EBUSY) {
+                        LOG_WRN("Mesh stack busy (err %d), reattempting transmission shortly", err);
+
+                        k_msleep(1000);
+                        err = model_handler_send(batch, count);
+                        if (err) {
+                            LOG_ERR("Retransmission failed (err %d). Storing data in flash", err);
+
+                            for (int i = 0; i < count; i++) {
+                                flash_storage_write(&batch[i]);
+                            }
+                        }
+                    }
+                } else {
+                    // Node isn't connected to USB and no central is available, store readings in flash
+                    LOG_INF("No connection available (USB or Mesh), storing data in flash");
+                    for (int i = 0; i < count; i++) {
+                        flash_storage_write(&batch[i]);
+                    }
                 }
-                k_work_reschedule(&send_work, K_SECONDS(1));
-                return;
-            } 
-            
-            if (err) {
-                LOG_ERR("Batch send failed %d", err);
             }
         }
     }
 }
+
+K_THREAD_DEFINE(sender_thread, SENDER_THREAD_STACK_SIZE, sender_thread_f, 
+                NULL, NULL, NULL, SENDER_THREAD_PRIORITY, 0, 0);
+
+static void erase_flash_thread_f(void *p1, void *p2, void *p3) {
+    int err = 0;
+    while (1) {
+        k_sem_take(&erase_flash_sem, K_FOREVER);
+        LOG_INF("Erasing flash");
+        err = flash_storage_clear();
+        if (err) {
+            LOG_ERR("Flash erase failed (err %d)", err);
+        }
+    }
+}
+
+K_THREAD_DEFINE(erase_flash_thread, ERASE_FLASH_THREAD_STACK_SIZE, erase_flash_thread_f, 
+                NULL, NULL, NULL, ERASE_FLASH_THREAD_PRIORITY, 0, 0);
 
 int main(void)
 {
@@ -375,10 +440,10 @@ int main(void)
 		}
     }
 
-    if (!device_is_ready(flash_dev)) {
-		printk("%s: device not ready.\n", flash_dev->name);
-		return 0;
-	}
+    err = flash_storage_init();
+    if (err) {
+        LOG_ERR("Flash Storage Init Failed (%d)", err);
+    }
 
     err = model_handler_init((struct model_cbs) {.gw_cb = gateway_data_handler, .led_cb = led_control});
     if (err) {
@@ -402,9 +467,6 @@ int main(void)
 			return 0;
 		}
 	}
-
-    // Init work queue itme for button press
-    k_work_init_delayable(&send_work, send_work_handler);
 
     err = bt_enable(NULL);
     if (err) {
@@ -437,11 +499,13 @@ int main(void)
 	bt_mesh_prov_enable(BT_MESH_PROV_ADV | BT_MESH_PROV_GATT);
 
     LOG_INF("Mesh initialized. Waiting for provisioning...");
-    LOG_INF("Once provisioned, press Button 1 to send message.");
+    LOG_INF("Once provisioned, press button 1 to generate data");
 
-    // The LEDs are controlled in reverse logic, so they are all enabled when the board powers up.
-    // This can be useful after a firmware update, since the bootloader takes a while to switch images
-    // so letting the LEDs turn on after the program starts allows the user to know the device is ready.
+    // Enable all LEDs as a sign that the app has started. This can be useful after a DFU, as 
+    // the bootloader may take a while to copy the new image and launch it
+    for (uint8_t i = 0; i < ARRAY_SIZE(leds); i++) {
+        gpio_pin_set_dt(&(leds[i]), LED_ON);
+    }
     // The LEDs can be turned off after 700ms. Blocking delay is ok atm since main isn't doing anything else after this point.
     k_msleep(700);
     for (uint8_t i = 0; i < ARRAY_SIZE(leds); i++) {
@@ -453,6 +517,5 @@ int main(void)
     if (is_central)
         gpio_pin_set_dt(&CENTRAL_LED, LED_ON);
         
-
     return 0;
 }

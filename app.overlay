@@ -6,11 +6,15 @@
 	cdc_acm_uart0: cdc_acm_uart0 {
 		compatible = "zephyr,cdc-acm-uart";
 	};
+
+	cdc_acm_uart1: cdc_acm_uart1 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
 };
 
 / {
 	chosen {
 		nordic,pm-ext-flash = &mx25r64;
-		zephyr,uart-mcumgr = &cdc_acm_uart0;
+		zephyr,uart-mcumgr = &cdc_acm_uart1;
 	};
 };

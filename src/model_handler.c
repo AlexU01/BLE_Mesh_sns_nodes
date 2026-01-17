@@ -240,3 +240,11 @@ int model_handler_cancel_central(void) {
 
     return err;
 }
+
+uint16_t get_central_address() {
+    return central_addr;
+}
+
+bool central_exists() {
+    return (central_addr != 0x0);
+}

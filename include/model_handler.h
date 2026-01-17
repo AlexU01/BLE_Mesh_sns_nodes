@@ -84,4 +84,16 @@ int model_handler_est_central(void);
  */
 int model_handler_cancel_central(void);
 
+/**
+ * @brief Get the mesh address of the node
+ * @return mesh address
+ */
+uint16_t get_central_address();
+
+/**
+ * @brief Check if a central node is known
+ * @return 1 if there is a central node, 0 otherwise
+ */
+bool central_exists();
+
 #endif /* MODEL_HANDLER_H__ */
