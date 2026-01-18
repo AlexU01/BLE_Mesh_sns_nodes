@@ -128,6 +128,15 @@ class DatabaseManager:
         conn.close()
         return count
 
+    def get_all_records(self):
+        # Fetch all records
+        conn = sql.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM readings ORDER BY id ASC")
+        rows = cursor.fetchall()
+        conn.close()
+        return rows
+
     def clear_db(self):
         # Deletes all rows and returns the number of deleted rows
         conn = sql.connect(self.db_name)
@@ -262,7 +271,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mesh Gateway Monitor")
-        self.resize(600, 500)
+        self.resize(700, 500)
 
         # Init DB
         self.db = DatabaseManager(DB_NAME)
@@ -292,6 +301,9 @@ class MainWindow(QMainWindow):
         self.btn_count = QPushButton("Check DB Count")
         self.btn_count.clicked.connect(self.check_db_count)
 
+        self.btn_print_all = QPushButton("Print All Records")
+        self.btn_print_all.clicked.connect(self.print_all_records)
+
         self.btn_clear = QPushButton("Clear Database")
         self.btn_clear.clicked.connect(self.clear_db_data)
         self.btn_clear.setStyleSheet("color: red;")
@@ -305,6 +317,7 @@ class MainWindow(QMainWindow):
         # DB Row
         db_layout = QHBoxLayout()
         db_layout.addWidget(self.btn_count)
+        db_layout.addWidget(self.btn_print_all)
         db_layout.addWidget(self.btn_clear)
 
         # Main layout
@@ -391,6 +404,32 @@ class MainWindow(QMainWindow):
     def check_db_count(self):
         count = self.db.get_count()
         self.log_area.appendPlainText(f">>> Database contains {count} entries.")
+
+    def print_all_records(self):
+        rows = self.db.get_all_records()
+        if not rows:
+            self.log_area.appendPlainText(">>> Database is empty.")
+            return
+
+        self.log_area.appendPlainText(f">>> Printing {len(rows)} records:")
+        header = f"{'ID':<6} | {'PC Time':<20} | {'Addr':<6} | {'Type':<15} | {'Value':<10} | {'Node TS':<10}"
+        self.log_area.appendPlainText(header)
+        self.log_area.appendPlainText("-" * len(header))
+
+        for row in rows:
+            # row structure: (id, pc_ts, addr, type, val, node_ts)
+            rid, pc_ts, addr, s_type, val, node_ts = row
+            
+            sensor_name = SENSOR_TYPES.get(s_type, str(s_type))
+            
+            if sensor_name == "TEMP (C)" or sensor_name == "HUMIDITY (%)":
+                val_str = f"{val / 100.0:.2f}"
+            else:
+                val_str = f"{val}"
+
+            line = f"{rid:<6} | {pc_ts:<20} | 0x{addr:04X} | {sensor_name:<15} | {val_str:<10} | {node_ts:<10}"
+            self.log_area.appendPlainText(line)
+        self.log_area.appendPlainText("-" * 40)
 
     def clear_db_data(self):
         reply = QMessageBox.question(self, 'Confirm Delete', 

@@ -4,7 +4,9 @@ This project implements a decentralized Bluetooth Mesh sensor network using the 
 
 ## Description
 
-The system consists of firmware for nRF5340/nRF52 series boards and a PC-side host application.
+The system consists of firmware for nRF5340/nRF52 series boards and a PC-side host application. Both applications are designed to be simple to expand when adding new sensors to the nodes, as well as new sensor types.
+
+At the moment, an nRF52840DK board supports reading data from a DHT11 sensor as a demonstration, while an nRF5340DK board simulates sensor readings by periodically generating compatible data.
 
 ## Node Firmware
 
@@ -69,6 +71,96 @@ The project has been tested on the following development kits:
     - USB: Composite Device (CDC ACM + SMP)
     - Multithreading: Dedicated threads for sensor generation and mesh transmission/storage offloading to allow the BLE stack to function correctly alongside the application
     - MCUboot: Handles DFU and firmware signing verification when enabled
+
+After the initialization section, the application is designed to work as much as possible using event driven threads. This ensures that Zephyr can run in a tickless manner, which allows it to put the SoC into deeper sleep states when there are no active threads, as it doesn't need a systick timer constantly running to schedule the threads.
+
+#### Sensor readings
+
+Sensors are periodically read by a dedicated thread. The received data is packaged as an `int32_t` in a simple struct, together with the current uptime of the node and an ID of the sensor reading type. Since the sensor type is stored as an `uint8_t`, up to 256 types of sensors can be defined. 
+```C
+enum sensor_type {
+    SENSOR_TYPE_COUNTER = 0,
+    SENSOR_TYPE_TEMP_C,
+    SENSOR_TYPE_HUMID_PC,
+    SENSOR_TYPE_BATT_MV,
+};
+
+struct sensor_message {
+    uint8_t type;
+    uint32_t timestamp;
+    int32_t value;
+};
+```
+
+The sensor readings are placed in a Zephyr queue. The reading thread reads the number of messages stored in the queue and, if it close to full, signals a different thread to start emptying it. This `sender thread` will then empty the queue into a local buffer of `sensor_message` structs
+
+As described before, depending on the state of the node and the network, the `sender_thread` can decide to handle the messages in three different ways:
+- If the node is the central, it serializes the data and calls a gateway handler that will send the messages to the Python app on the host PC via USB
+- If the node isn't connected to a host running the Gateway App, it verifies if the network has a known Central Node. If there is one, the thread makes an API call to the Custom Vendor Model which will publish data to the Mesh
+- If the node is isolated or there is no Central, the thread will use the flash storage library to write the messages to the external flash partition.  
+
+These two threads are synchronised through the use of a corresponding semaphore. Buttons 1 and 2 trigger ISR's that "give" to the `sensor_reading` and `sender` threads, respectively. Additionally, they are on a timed wait when "taking" their semaphores, to ensure the operations happen periodically as well. 
+
+#### BLE Mesh
+
+On a software level, each BLE Mesh Node must consist of at least one **Element**, which defines a set of functionalities through the use of at least one **Model**. A Model essentially groups a number of operations and data structures that nodes can recognise and use to interact with eachother.  
+
+The BLE Mesh specification offers a number of predefined Models to choose from. However, these can be quite restrictive in the way they handle data packaging and interaction between nodes. As such, a Custom Vendor Model has been implemented. This Model currently supports three Ops (operations).
+
+```C
+// Test company and vendor ID
+#define TEST_VND_COMPANY_ID 0xFFFF
+#define TEST_VND_MODEL_ID   0x0001
+
+// Custom OpCode: 3-byte header for Vendor Models (C0 | ID) + Company ID
+#define BT_MESH_MODEL_OP_MESSAGE BT_MESH_MODEL_OP_3(0x01, TEST_VND_COMPANY_ID)
+#define BT_MESH_MODEL_OP_EST_CENTRAL BT_MESH_MODEL_OP_3(0x02, TEST_VND_COMPANY_ID)
+#define BT_MESH_MODEL_OP_CANCEL_CENTRAL BT_MESH_MODEL_OP_3(0x03, TEST_VND_COMPANY_ID)
+
+static const struct bt_mesh_model_op vnd_ops[] = {
+    { BT_MESH_MODEL_OP_MESSAGE, BT_MESH_LEN_MIN(MIN_SNS_MSG_LEN), handle_message },
+    { BT_MESH_MODEL_OP_EST_CENTRAL, BT_MESH_LEN_EXACT(2), handle_est_central },
+    { BT_MESH_MODEL_OP_CANCEL_CENTRAL, BT_MESH_LEN_EXACT(2), handle_cancel_central },
+    BT_MESH_MODEL_OP_END,
+};
+
+```
+
+1. Message Op - A Message contains up to ten serialized `sensor_message` structs as payload, packaged in a simple protocol to allow deserialization by receiving nodes. The protocol will be described shortly.
+
+2. Establish Central Op - Used by a node that has been selected as a central by the Gateway App to let the other nodes know that they can now publish their data to the Mesh. On reception of this Op, the nodes will store the 16-bit Mesh address of the Central.
+
+3. Cancel Central Op - When a Central node is disconnected from its host, or the Gateway App is closed, the Central lets the other nodes know that it can no longer forward their messages. The other nodes will update this information locally and will store their data in flash until a new Central is chosen.
+
+The sensor nodes in this network are all identical. They contain a single Element, which in turn contains a Configuration Server Model (mandatory), a Health Server Model (used to identify the node during provisioning) and the Custom Vendor Model.
+
+```C
+// Declare the standard SIG models needed for every mesh node
+static struct bt_mesh_model sig_models[] = {
+	BT_MESH_MODEL_CFG_SRV,
+	BT_MESH_MODEL_HEALTH_SRV(&health_srv, &health_pub),
+};
+
+/** 
+ * Publication context - required for the model to send messages
+ * Buffer can hold a payload of 2 bytes for sync and control messages.
+ * Sensor readings are published using a different buffer.
+ */
+BT_MESH_MODEL_PUB_DEFINE(vnd_pub, NULL, BT_MESH_MODEL_BUF_LEN(BT_MESH_MODEL_OP_EST_CENTRAL, 2));
+
+// Define a Vendor Model using the BT_MESH_MODEL_VND macro
+// Args: Company ID, Model ID, Opcode List, Publication Data, User Data (NULL) 
+static struct bt_mesh_model vnd_models[] = {
+    BT_MESH_MODEL_VND(TEST_VND_COMPANY_ID, TEST_VND_MODEL_ID, vnd_ops, &vnd_pub, NULL),
+};
+
+// Element configuration (the node's capabilities)
+static const struct bt_mesh_elem elements[] = {
+	BT_MESH_ELEM(0, sig_models, vnd_models),
+};
+```
+
+The protocol used to transfer messages accross the network devides the payload into 1 byte representing the number of messages being sent, followed by groups of 9 bytes representing the serialized data.
 
 ### Host App
 
@@ -190,6 +282,7 @@ How to use the App:
     - The status should change to "Connected" and the log will confirm: `>> Assigned CENTRAL role to connected node`
 3. Watch the log window for incoming batches of sensor data from various nodes in the mesh
 4. Use the "Check DB Count" button to see storage usage. Use "Disconnect" to release the COM port and instruct the node to stop acting as the Central gateway.
+5. Use the "Print All Records" button to see all recorded data.
 
 **Note** that if a node is already connected via USB to the PC, the app will assign that node as central on startup.
 
