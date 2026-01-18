@@ -9,6 +9,7 @@ LOG_MODULE_REGISTER(model_handler, LOG_LEVEL_INF);
 // Publish config constants
 #define GROUP_ADDR 0xC000
 #define DEFAULT_TTL 3
+#define DEFAULT_APP_IDX 0
 
 // Define the Health Pub model and Attention callbacks 
 static struct k_work_delayable attention_blink_work;
@@ -165,15 +166,39 @@ const struct bt_mesh_comp comp = {
 
 // Public Functions
 void configure_model(void) {
+    struct bt_mesh_model *mod = &vnd_models[0];
+    bool bound = false;
+    // Bind default app key to model
+    // Check if already bound
+    for (int i = 0; i < CONFIG_BT_MESH_MODEL_KEY_COUNT; i++) {
+        if (mod->keys[i] == DEFAULT_APP_IDX) {
+            bound = true;
+            break;
+        }
+    }
+
+    // Bind if not found
+    if (!bound) {
+        for (int i = 0; i < CONFIG_BT_MESH_MODEL_KEY_COUNT; i++) {
+            if (mod->keys[i] == BT_MESH_KEY_UNUSED) {
+                mod->keys[i] = DEFAULT_APP_IDX;
+                LOG_INF("Auto-bound AppKey to Vendor Model");
+                break;
+            }
+        }
+    }
+
     // Set publication parameters
     // Publication address, ttl and retransmit policy are identical for every node and
     // know at boot
     vnd_pub.addr = GROUP_ADDR;
     vnd_pub.ttl  = DEFAULT_TTL;
+    vnd_pub.key  = DEFAULT_APP_IDX;
     vnd_pub.retransmit = 0;
 
+    LOG_INF("Auto-configured publication params");
+
     // Set subscription parameters
-    struct bt_mesh_model *mod = &vnd_models[0];
     bool subbed = false;
 
     // Search through the vendor model's list of subscribed groups for the default group address
