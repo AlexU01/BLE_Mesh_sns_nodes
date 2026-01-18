@@ -23,6 +23,10 @@
 #include "model_handler.h"
 #include "flash_storage.h"
 
+#if defined(CONFIG_SOC_SERIES_NRF52X)
+#include <zephyr/drivers/sensor.h>
+#endif
+
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
 // TODO: Remove this counter once data is available from sensors
@@ -30,6 +34,10 @@ static uint32_t app_counter = 0;
 static struct gpio_callback btn_cb;
 static enum usb_dc_status_code current_usb_status = USB_DC_DISCONNECTED;
 static bool is_central = false;
+
+#if defined(CONFIG_SOC_SERIES_NRF52X)
+const struct device *dht11 = DEVICE_DT_GET(DT_NODELABEL(dht11));
+#endif
 
 #define SNS_READ_INTERVAL_MS 60000
 #define SNS_THREAD_STACK_SIZE 1024
@@ -71,10 +79,6 @@ static const struct gpio_dt_spec leds[] = {
 #define LED_ON       1
 #define LED_OFF      0
 
-// #define SPI_FLASH_SECTOR_SIZE  CONFIG_NORDIC_QSPI_NOR_FLASH_LAYOUT_PAGE_SIZE
-// #define FLASH_PARTITION_ID     PM_DATA_STORAGE_ID
-// #define FLASH_PARTITION_OFFSET PM_DATA_STORAGE_OFFSET
-// const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(nordic_pm_ext_flash));
 
 // Function that will be passed as cb to model_handler
 static void led_control(uint32_t led_mask) {
@@ -260,6 +264,36 @@ static void gen_samples_and_enq(void) {
     app_counter++;
     msg.timestamp = k_uptime_get_32();
 
+#if defined(CONFIG_SOC_SERIES_NRF52X)
+    int err = sensor_sample_fetch(dht11);
+    if (err) {
+        LOG_ERR("Failed to get sample from DHT11 (err %d)", err);
+        return;
+    }
+
+    struct sensor_value temp;
+    struct sensor_value humid;
+
+    err = sensor_channel_get(dht11, SENSOR_CHAN_AMBIENT_TEMP, &temp);
+    if (!err) {
+        LOG_WRN("GOT TEMP: %d.%d", temp.val1, temp.val2/10000);
+        msg.type = SENSOR_TYPE_TEMP_C;
+        msg.value = temp.val1*100 + temp.val2/10000;
+        enq_reading(&sns_msg_q, &msg);
+
+        err = sensor_channel_get(dht11, SENSOR_CHAN_HUMIDITY, &humid);
+        if (err) {
+            LOG_ERR("Failed to read humidity from DHT11 (err %d)", err);
+        } else {
+            LOG_WRN("GOT HUMID: %d.%d", humid.val1, humid.val2/10000);
+            msg.type = SENSOR_TYPE_HUMID_PC;
+            msg.value = humid.val1*100 + humid.val2/10000;
+            enq_reading(&sns_msg_q, &msg);
+        }
+    } else {
+        LOG_ERR("Failed to read temperature from DHT11 (err %d)", err);
+    }
+#elif defined(CONFIG_SOC_SERIES_NRF53X)
     // Generate a counter reading
     msg.type = SENSOR_TYPE_COUNTER;
     msg.value = app_counter;
@@ -278,7 +312,7 @@ static void gen_samples_and_enq(void) {
         msg.value = 50 + (10 - (app_counter % 21));
     }
     enq_reading(&sns_msg_q, &msg);
-
+#endif
     // If the queue is almost full, try to empty it
     if (k_msgq_num_free_get(&sns_msg_q) < 2) {
         k_sem_give(&send_samples_sem);
@@ -456,6 +490,16 @@ int main(void)
         LOG_ERR("Model handler init failed (err %d)", err);
         return err;
     }
+
+#if defined(CONFIG_SOC_SERIES_NRF52X)
+    if (!dht11) {
+        LOG_ERR("DHT sensor not found");
+    } else if (!device_is_ready(dht11)) {
+        LOG_ERR("DHT sensor not ready");
+    } else {
+        LOG_INF("DHT sensor found and ready");
+    }
+#endif
 
     if (!device_is_ready(usb_uart_dev)) {
         LOG_ERR("CDC ACM device not ready");
