@@ -6,6 +6,10 @@
 
 LOG_MODULE_REGISTER(model_handler, LOG_LEVEL_INF);
 
+// Publish config constants
+#define GROUP_ADDR 0xC000
+#define DEFAULT_TTL 3
+
 // Define the Health Pub model and Attention callbacks 
 static struct k_work_delayable attention_blink_work;
 static bool attention;
@@ -121,6 +125,10 @@ static int handle_cancel_central(const struct bt_mesh_model *model,
  * Ops:
  * - Message: An array of sensor readings (serialized sensor_message structs). One extra byte on the min length since
  * the first byte of the payload represents the number of readings transmitted. 10 readings max limit. 
+ * - Establish central: Sent by a node that is connected via USB to a host and is selected as Central by the app, unless
+ * a node has already declared itself central
+ * - Cancel central: Sent by the central node if it's disconnected from the host to let the other nodes know they should
+ * stop sending data to it
  * */ 
 static const struct bt_mesh_model_op vnd_ops[] = {
     { BT_MESH_MODEL_OP_MESSAGE, BT_MESH_LEN_MIN(MIN_SNS_MSG_LEN), handle_message },
@@ -156,6 +164,39 @@ const struct bt_mesh_comp comp = {
 };
 
 // Public Functions
+void configure_model(void) {
+    // Set publication parameters
+    // Publication address, ttl and retransmit policy are identical for every node and
+    // know at boot
+    vnd_pub.addr = GROUP_ADDR;
+    vnd_pub.ttl  = DEFAULT_TTL;
+    vnd_pub.retransmit = 0;
+
+    // Set subscription parameters
+    struct bt_mesh_model *mod = &vnd_models[0];
+    bool subbed = false;
+
+    // Search through the vendor model's list of subscribed groups for the default group address
+    for (int i = 0; i < CONFIG_BT_MESH_MODEL_GROUP_COUNT; i++) {
+        if (mod->groups[i] == GROUP_ADDR) {
+            LOG_INF("Already subbed to default group address");
+            subbed = true;
+            break;
+        }
+    }
+
+    // Add group address to sub list if not found already
+    if (!subbed) {
+        for (int i = 0; i < CONFIG_BT_MESH_MODEL_GROUP_COUNT; i++) {
+            if (mod->groups[i] == BT_MESH_ADDR_UNASSIGNED) {
+                mod->groups[i] = GROUP_ADDR;
+                LOG_INF("Auto-subbed to default group address");
+                break;
+            }
+        }
+    }
+}
+
 int model_handler_init(const struct model_cbs _mdl_cbs) {
 	// Init the work queue object for the attention blink
 	k_work_init_delayable(&attention_blink_work, attention_blink);
@@ -163,6 +204,9 @@ int model_handler_init(const struct model_cbs _mdl_cbs) {
     // Store callbacks
     mdl_cbs.gw_cb = _mdl_cbs.gw_cb;
     mdl_cbs.led_cb = _mdl_cbs.led_cb;
+
+    // Apply default config
+    // configure_model();
 
 	return 0;
 }

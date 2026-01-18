@@ -58,6 +58,11 @@ struct sensor_message {
 extern const struct bt_mesh_comp comp;
 
 /**
+ * @brief Set default publication and subscription parameters (group address, TTL and retransmission policy)
+ */
+void configure_model(void);
+
+/**
  * @brief Initialize the mesh model subsystem
  * @param _mdl_cbs Struct containing function pointers to the callback implementations
  * @return 0 on success, negative error code otherwise

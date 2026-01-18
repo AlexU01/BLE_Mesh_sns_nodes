@@ -172,6 +172,7 @@ static void gateway_data_handler(const uint8_t *data, const uint8_t len, const u
 
 static void provisioning_complete(uint16_t net_idx, uint16_t addr) {
     LOG_INF("Provisioning complete! NetIdx: 0x%04x, Address: 0x%04x", net_idx, addr);
+    configure_model();
 }
 
 static void provisioning_reset(void) {
@@ -201,14 +202,12 @@ static void usb_status_cb(enum usb_dc_status_code cb_status, const uint8_t *para
             
             // Start listening for 'Set Central' command
             uart_irq_rx_enable(usb_uart_dev);
-            // model_handler_est_central();
             break;
         case USB_DC_RESUME:
             LOG_INF("USB Resumed");
             is_usb_conn = true;
             gpio_pin_set_dt(&USB_CONN_LED, LED_ON);
             uart_irq_rx_enable(usb_uart_dev);
-            // model_handler_est_central();
             break;
         case USB_DC_DISCONNECTED:
         case USB_DC_SUSPEND:
