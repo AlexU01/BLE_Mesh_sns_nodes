@@ -160,13 +160,76 @@ static const struct bt_mesh_elem elements[] = {
 };
 ```
 
-The protocol used to transfer messages accross the network devides the payload into 1 byte representing the number of messages being sent, followed by groups of 9 bytes representing the serialized data.
+The protocol used to transfer messages accross the network devides the payload into 1 byte representing the number of messages being sent, followed by groups of 9 bytes representing the serialized data. Upon reception by a node, the data is copied directly into an internal buffer and sent to a gateway callback. If the node is not a central, no more processing is done on the data. If the node is a central, the data is further packaged inside another protocol for the USB transmission. A two byte sync sequence (`'R'|'X'`) is added at the start, followed by the 16-bit Mesh address of the Central node. After these 4 bytes, the data recieved over BLE is copied directly into the buffer and a `'\0'` is inserted to mark the end of the transmission. At this point, the data is sent out over USB to the Gateway App, which look for the sync sequence to recognise a valid transmission.
+
+#### Flash storage
+
+The firmware implements a simple Flash Ring Buffer designed to reliably store sensor data on the external QSPI flash when the node is isolated from the mesh network.
+
+The flash partition is divided into fixed-size Slots (4KB sectors, same size as a flash page). Data is written sequentially into the active slot. When a slot becomes full, the next slot in the sequence is erased to ensure it is clean and ready for writing, implementing a circular overwriting mechanism. This ensures that the storage always contains the most recent data while respecting the hardware constraint that flash memory must be erased in blocks the size of a page before being written, as the module uses NOR flash.
+
+To survive power cycles and reboots, the system maintains a persistent context structure, containing the current write slot, byte offset, and total record count. This metadata is stored in a dedicated Metadata Sector at the end of the partition. Instead of overwriting the metadata at the same address, which would quickly wear out the flash, new metadata records are appended to the sector.
+
+```C
+struct flash_ctx {
+    uint32_t magic;
+    uint32_t current_slot;           // Index 0 to USED_SLOTS-1
+    uint32_t write_offset;           // Byte offset within the current slot
+    uint32_t total_count;            // Total records stored
+    uint8_t  slot_valid[USED_SLOTS]; // 1 if slot is full
+};
+```
+
+On boot, the system scans this sector to find the latest valid record, restoring the previous state of the buffer. The metadata sector is erased only when it is completely full.
+
+#### Firmware Update
+
+While the the inclusion and operation of the DFU mechanism is mostly managed by Zephyr and the build system, additional configuration of the USB CDC ACM had to be enabled in order to allow the Central node to use the USB peripheral alongside the SMP server.
+
+Zephyr has been configured to expose two ports to the host, one for the application and one for the update server.
+
+```yml
+&zephyr_udc0 {
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+
+	cdc_acm_uart1: cdc_acm_uart1 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+/ {
+	chosen {
+		nordic,pm-ext-flash = &mx25r64;
+		zephyr,uart-mcumgr = &cdc_acm_uart1;
+	};
+};
+```
+
+#### Central Node Management
+
+As mentioned, the Central node can only be designated by the Gateway App. As soon as a Node detects a connection on the USB header, it starts listening to the port. At the moment, the Gateway App only sends single characters for control. When the node receives a `'C'` byte, it knows it has been designated Central by the host and publishes this information to the Mesh.
+
+The Central needs to know when it should no longer forward data to the host. If either the node is physically disconnected, or if it receives a `'D'` byte from the host, it publishes to the network that it is no longer the Central. Additionally, if the connection is lost (no power is detected on the USB header), the node stops listening to the port. 
 
 ### Host App
 
 - Language: Python 3.12+
 - Framework: PyQt6 (GUI)
 - Dependencies: pyserial (Comms), keyring (Security), sqlite3 (Storage)
+
+The Python-based Gateway Application uses a multi-threaded architecture based on the PyQt6 framework to ensure the user interfac remains responsive while the serial communication is being handled.
+
+All serial port operations (scanning, connecting, and reading data streams) are offloaded to a background `QThread`, the `SerialWorker`. This prevents the main GUI thread from freezing while waiting for I/O operations or blocking on `read()` calls.
+
+The application ensures thread safety by avoiding direct variable access between threads. Instead, it uses Qt's Signals and Slots mechanism. 
+
+When the worker parses a complete sensor packet, it emits a custom `data_signal` carrying the parsed objects. The main thread's slot function (`sensor_data_handler`) receives this signal and safely updates the UI widgets and database.
+
+To send commands, like designating a Central node, the main thread emits a `write_signal`. A slot within the worker thread's context receives this signal and performs the `serial.write()` operation, ensuring that the serial resource is accessed exclusively by the worker thread.
+
+Database interactions are encapsulated in a `DatabaseManager` class using `sqlite3`. While currently synchronous within the main thread, due to the low frequency of writes, the architecture allows for easy migration to a dedicated DB thread if throughput requirements increase. Transactions are committed in batches, as the sensor packets arrive.
 
 ## Prerequisites
 

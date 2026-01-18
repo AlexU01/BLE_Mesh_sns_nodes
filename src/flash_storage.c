@@ -39,10 +39,10 @@ const struct device *flash_dev = DEVICE_DT_GET(DT_CHOSEN(nordic_pm_ext_flash));
 
 struct flash_ctx {
     uint32_t magic;
-    uint32_t current_slot;           /* Index 0 to USED_SLOTS-1 */
-    uint32_t write_offset;           /* Byte offset within the current slot */
-    uint32_t total_count;            /* Total records stored (approx) */
-    uint8_t  slot_valid[USED_SLOTS]; /* 1 if slot is full */
+    uint32_t current_slot;           // Index 0 to USED_SLOTS-1
+    uint32_t write_offset;           // Byte offset within the current slot
+    uint32_t total_count;            // Total records stored (approx)
+    uint8_t  slot_valid[USED_SLOTS]; // 1 if slot is full
 };
 
 // In-Memory State
@@ -75,8 +75,6 @@ static int save_context(void)
     }
     return err;
 }
-
-/* --- Public API --- */
 
 int flash_storage_init(void)
 {
