@@ -44,10 +44,17 @@ To prevent unauthorized access to the database or critical settings, the applica
 
 ## Hardware
 
-Tested on the following development kits:
+The project has been tested on the following development kits:
 
-- Nordic nRF5340DK: Main development platform. Uses dual-core architecture (App Core for Mesh/Logic, Net Core for Bluetooth Controller).
+- Nordic nRF5340DK: Main development platform
+    - SoC: nRF5340 Dual-Core SoC
+        - App Core: 128 MHz Arm Cortex-M33 with 1 MB Flash + 512 KB RAM (Runs Application & Mesh Logic)
+        - Net Core: 64 MHz Arm Cortex-M33 with 256 KB Flash + 64 KB RAM (Runs Bluetooth Controller)
+    - External Storage: 8 MB MX25R6435F External QSPI NOR Flash (Used for reliable data buffering)
 - Nordic nRF52840DK: Compatible as a standard mesh node, as well as a Central.
+    - SoC: nRF52840 Single-Core 64 MHz Arm Cortex-M4 with FPU, 1 MB Flash + 256 KB RAM
+    - External storage: Same as nRF5340DK
+    - Sensors: Connected to a DHT11 Temperature & Humidity sensor via GPIO (`P1.02`)
 
 ## Software Stack
 
