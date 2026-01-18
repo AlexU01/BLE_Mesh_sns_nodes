@@ -143,6 +143,8 @@ Support for TF-M is available for compatible MCUs (e.g., nRF5340). To enable it,
 
 ## Usage
 
+### Nodes
+
 1. **Flash Nodes**: Flash the firmware to the nRF boards.
 2. **Provision**: Use the nRF Mesh mobile app to provision all nodes into the same network.
 
@@ -166,6 +168,23 @@ The LEDs offer an indication of the node's status:
 - `LED 4`: If DFU is enabled, this LED lets the user know that the board is in USB recovery mode
 
 Additionally, all 4 LEDs will briefly flash when the application starts running on the board. This is useful especially after a firmware update is performed, as the bootloader may take a while to copy and launch the new firmware. During this period, the node cannot be used. As soon as the LEDs flash, the user can be sure that the device is operating as a node.
+
+### Gateway App
+
+The Gateway App is a Python-based GUI tool for managing the sensor network. It serves as the primary interface for collecting data and designating the network's Central node. The app automatically detects a compatible nRF board connected via USB, by scanning for a known combination of PID and VID. It then sends a command to designate it as the Mesh Central. This node then aggregates data from the rest of the mesh network. 
+
+The app displays incoming sensor readings in a real-time log window and simultaneously saves them to a local SQLite database (`sensor_data.db`) for persistent storage. A set of basic built-in controls are provided to check the total record count and clear the database history. App access is granted through a local password system stored in the OS Keyring. If the credentials are tampered with, the app enforces a database wipe to protect data integrity.
+
+How to use the App:
+
+1. Launch the application by opening a terminal window in the project directory and running `python ./gateway_app.py`.
+    - On the first run, you will be prompted to create an admin password
+2. Plug an nRF node into the PC (use the nRF port on the board, **NOT** the IMCU header) and click the `Connect` button.
+    - The status should change to "Connected" and the log will confirm: `>> Assigned CENTRAL role to connected node`
+3. Watch the log window for incoming batches of sensor data from various nodes in the mesh
+4. Use the "Check DB Count" button to see storage usage. Use "Disconnect" to release the COM port and instruct the node to stop acting as the Central gateway.
+
+**Note** that if a node is already connected via USB to the PC, the app will assign that node as central on startup.
 
 ### Firmware Update
 

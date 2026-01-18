@@ -31,7 +31,7 @@ static struct gpio_callback btn_cb;
 static enum usb_dc_status_code current_usb_status = USB_DC_DISCONNECTED;
 static bool is_central = false;
 
-#define SNS_READ_INTERVAL_MS 20000
+#define SNS_READ_INTERVAL_MS 60000
 #define SNS_THREAD_STACK_SIZE 1024
 #define SNS_THREAD_PRIORITY 7
 #define SENDER_THREAD_STACK_SIZE 2048
@@ -137,6 +137,10 @@ static void uart_rx_cb(const struct device *dev, void *user_data) {
                 model_handler_est_central();
                 gpio_pin_set_dt(&CENTRAL_LED, LED_ON);
                 is_central = true;
+            } else if (c == 'D') {
+                LOG_INF("Received 'Cancel Central'");
+                model_handler_cancel_central();
+                gpio_pin_set_dt(&CENTRAL_LED, LED_OFF);
             }
         }
     }
@@ -158,8 +162,8 @@ static void gateway_data_handler(const uint8_t *data, const uint8_t len, const u
     usb_buf[1] = 'X';
     
     // Add sender address
-    usb_buf[2] = (uint8_t)(addr >> 8); // Extract high byte
-    usb_buf[3] = (uint8_t)(addr & 0xFF); // Extract low byte
+    usb_buf[2] = (uint8_t)(addr & 0xFF); // Extract low byte
+    usb_buf[3] = (uint8_t)(addr >> 8); // Extract high byte
     
     // Add end byte
     usb_buf[4+len] = '\0';
@@ -320,6 +324,9 @@ static void sender_thread_f(void *p1, void *p2, void *p3) {
             if (count) {
                 if (is_central) {
                     // If the node is the central, send data over USB directly
+                    // Also announce that node is central in case any other nodes joined the network
+                    // and are unaware
+                    model_handler_est_central();
                     memset(buf, 0, sizeof(buf));
                     buf[0] = count;
                     int offset = 1;

@@ -280,8 +280,13 @@ class MainWindow(QMainWindow):
         self.log_area.setFont(font)
 
         # Connection button
-        self.btn_retry = QPushButton("Retry Connection")
+        self.btn_retry = QPushButton("Connect")
         self.btn_retry.clicked.connect(self.start_worker)
+
+        # Disconnect button
+        self.btn_disconnect = QPushButton("Disconnect")
+        self.btn_disconnect.clicked.connect(self.disconnect_device)
+        self.btn_disconnect.setEnabled(False) # Disabled until connected
 
         # DB Controls
         self.btn_count = QPushButton("Check DB Count")
@@ -292,17 +297,22 @@ class MainWindow(QMainWindow):
         self.btn_clear.setStyleSheet("color: red;")
 
         # Layout
-        # Button row
-        btn_layout = QHBoxLayout()
-        btn_layout.addWidget(self.btn_retry)
-        btn_layout.addWidget(self.btn_count)
-        btn_layout.addWidget(self.btn_clear)
+        # Connection Row
+        conn_layout = QHBoxLayout()
+        conn_layout.addWidget(self.btn_retry)
+        conn_layout.addWidget(self.btn_disconnect)
+
+        # DB Row
+        db_layout = QHBoxLayout()
+        db_layout.addWidget(self.btn_count)
+        db_layout.addWidget(self.btn_clear)
 
         # Main layout
         layout = QVBoxLayout()
         layout.addWidget(self.status_label)
         layout.addWidget(self.log_area)
-        layout.addLayout(btn_layout)
+        layout.addLayout(conn_layout)
+        layout.addLayout(db_layout)
 
         container = QWidget()
         container.setLayout(layout)
@@ -323,19 +333,35 @@ class MainWindow(QMainWindow):
         self.worker.data_signal.connect(self.sensor_data_handler)
         self.worker.start()
 
+    def disconnect_device(self):
+        if self.worker and self.worker.isRunning():
+            self.log_area.appendHtml("<i>Disconnecting...</i>")
+            # Send 'D' command to tell board to resign as Central
+            self.worker.send_command(b'D')
+            
+            # Stop the worker thread (closes port)
+            self.worker.stop()
+            self.worker = None
+            
+            # Update UI manually since the worker is stopped
+            self.update_status(False, "User Disconnected")
+
     def update_status(self, connected, msg):
         if connected:
             self.status_label.setText(f"Status: Connected ({msg})")
             self.status_label.setStyleSheet("font-weight: bold; color: green;")
             self.btn_retry.setEnabled(False)
-
+            self.btn_disconnect.setEnabled(True)
+            
             # Send 'C' immediately upon connection to tell the node it is Central
-            self.worker.send_command(b'C')
-            self.append_log(">> Assigned CENTRAL role to connected node.")
+            if self.worker:
+                self.worker.send_command(b'C')
+                self.append_log(">> Assigned CENTRAL role to connected node.")
         else:
             self.status_label.setText(f"Status: Disconnected ({msg})")
             self.status_label.setStyleSheet("font-weight: bold; color: red;")
             self.btn_retry.setEnabled(True)
+            self.btn_disconnect.setEnabled(False)
 
     def append_log(self, text):
         self.log_area.appendPlainText(text)
@@ -378,7 +404,10 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         # Cleanup thread on window close
-        if self.worker:
+        # Send disconnect command before killing the thread
+        if self.worker and self.worker.isRunning():
+            self.worker.send_command(b'D')
+            # Give it a tiny moment to flush if needed, though stop() waits()
             self.worker.stop()
         event.accept()
 
