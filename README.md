@@ -9,15 +9,15 @@ The system consists of firmware for nRF5340/nRF52 series boards and a PC-side ho
 ## Node Firmware
 
 ### Sensor Logic & Role Selection
-Nodes are designed to be autonomous. They wake up periodically (or when `Button 1`) to generate sensor readings. Any node connected to the PC via USB can be designated as the Central (Gateway) by the host application. Upon selection, the node broadcasts its status to the mesh network, allowing other nodes to route data towards it.
+Nodes are designed to be autonomous. They wake up periodically (or when `Button 1` is pressed) to generate sensor readings. Any node connected to the PC via USB can be designated as the Central (Gateway) by the host application. Upon selection, the node broadcasts its status to the mesh network, allowing other nodes to route data towards it.
 
 ### Data Routing
-Data transmission follows a priority-based routing logic. If a node is the Central and has an active USB connection, readings are piped directly to the host via USB CDC ACM. If the node is a standard mesh participant, readings are buffered in RAM and transmitted to the Central using Batch Segmentation, which packages multiple readings into a single large message to reduce airtime. In cases where the node is isolated (no Central or Mesh available), readings are stored in a Raw Flash Ring Buffer on the external QSPI flash.
+Data transmission follows a priority-based routing logic. If a node is the Central and has an active USB connection, readings are piped directly to the host via USB CDC ACM. If the node is a standard mesh participant, readings are buffered in RAM and transmitted to the Central using Batch Segmentation, which packages multiple readings into a single large message to reduce airtime. In cases where the node is isolated (no Central or Mesh available), readings are stored in a flash ring buffer on the external QSPI flash.
 
 This logic is automatically triggered when the RAM queue is almost full (8/10 readings) to avoid having to overwrite data that is not persistently stored yet. Additionally, pressing `Button 2` on the boards also triggers this sequence. 
 
 ### Reliable Storage
-To ensure data integrity during isolation, the firmware implements a custom slot-based circular buffer on the raw external flash. Metadata, including the write head position and total record count, is persisted in a dedicated sector to survive power cycles. The storage system automatically manages sector erasures, employing a wear-leveling strategy via append-only metadata updates.
+To ensure data integrity during isolation, the firmware implements a custom slot-based circular buffer on the external flash. Metadata, including the write head position and total record count, is persisted in a dedicated sector to survive power cycles. The storage system automatically manages sector erasures, using a wear-leveling strategy via append-only metadata updates.
 
 ### Auto-Configuration
 Designed for ease of deployment, nodes automatically bind AppKeys and subscribe to the Group Address (0xC000) upon provisioning. To prevent network congestion, retransmission is disabled at the application layer, relying instead on the robust retransmission mechanisms of the Bluetooth Mesh network layer.
@@ -27,7 +27,7 @@ Additionally, nodes that have been powered off indefinitely can seamlessly rejoi
 ### Maintenance
 The system supports Application DFU via USB (MCUmgr) using a Composite Device setup, which exposes separate CDC ports for Data and SMP (Simple Management Protocol). Additionally, Serial Recovery (MCUboot) is available via a button-hold reset sequence for recovery scenarios.
 
-When MCUboot is configured, it will additionally only allow firmware signed with a recognised private key to run on the MCU after a firmware update, enhancing security. The toolchain handles the firmware signing, the generation of a mathcing public key from the provided private key, and its inclusion into the bootloader during the build process with minimal intervention. **However**, users must ensure that they do not lose the private key used to sign the firmware that was flashed via the debugger. If subsequent binaries are not signed with the same private key, DFU will no longer work over USB and the board will have to be reflashed.
+When MCUboot is configured, it will additionally only allow firmware signed with a recognised private key to run on the MCU after a firmware update, enhancing security. The toolchain handles the firmware signing, the generation of a matching public key from the provided private key, and its inclusion into the bootloader during the build process with minimal intervention. **However**, users must ensure that they do not lose the private key used to sign the firmware that was flashed via the debugger. If subsequent binaries are not signed with the same private key, DFU will no longer work over USB and the board will have to be reflashed using the debugging port.
 
 To ensure that the system can recover after a failed update, the DFU mechanism uses dual slots. The running application is stored in the SoC's flash and the incoming update firmware is stored in a different slot located in the board's external flash module. This ensures that MCUboot can roll back to a known state if any issues are encountered during the update process and, additionally, maintains the maximum amount of available space for the firmware by using the external flash.
 
@@ -96,12 +96,16 @@ In `prj.conf`:
 CONFIG_APP_ENABLE_DFU=y
 ```
 
-In `sysbuild.conf`, decomment the lines starting with `SB_CONFIG`:
-```
+In `sysbuild.conf`, uncomment the lines starting with `SB_CONFIG`:
+```python
 # MCUboot
 SB_CONFIG_BOOTLOADER_MCUBOOT=y
 # MCUboot should use external flash
 SB_CONFIG_PM_EXTERNAL_FLASH_MCUBOOT_SECONDARY=y
+
+# Config for signing with custom private key
+SB_CONFIG_BOOT_SIGNATURE_KEY_FILE="\${APP_DIR}/<private_key_name>.pem"
+SB_CONFIG_BOOT_SIGNATURE_TYPE_ECDSA_P256=y
 ```
 
 In `pm_static.yml` (Partition Layout):
@@ -142,7 +146,7 @@ Support for TF-M is available for compatible MCUs (e.g., nRF5340). To enable it,
 1. **Flash Nodes**: Flash the firmware to the nRF boards.
 2. **Provision**: Use the nRF Mesh mobile app to provision all nodes into the same network.
 
-Note: Nodes auto-configure their Publish/Subscribe addresses to 0xC000.
+Note: Nodes auto-configure their Publish/Subscribe addresses to 0xC000 and also bind the default AppKey index.
 
 3. **Connect Gateway**: Connect one board to the PC via the nRF USB port (not the J-Link port).
 4. **Launch App**: Run `python gateway_app.py`.
@@ -165,7 +169,7 @@ Additionally, all 4 LEDs will briefly flash when the application starts running 
 
 ### Firmware Update
 
-If DFU is enabled, it is highly recommended to use the [AuTerm](https://github.com/thedjnK/AuTerm/releases) utility, which offers a simple to use GUI for the MCUmgr tool that performs the actual update. DFU is available **while the application is running** on the board as well. There is no need to enter Recovery Mode as long as there are no isses with the application.
+If DFU is enabled, it is highly recommended to use the [AuTerm](https://github.com/thedjnK/AuTerm/releases) utility, which offers a simple to use GUI for the MCUmgr tool that performs the actual update. DFU is available **while the application is running** on the board as well. There is no need to enter Recovery Mode as long as there are no issues with the application.
 
 **Note** that the board **must** be flashed using the debugger if it has no firmware on it, or if it has been running a configuration with DFU disabled.
 
