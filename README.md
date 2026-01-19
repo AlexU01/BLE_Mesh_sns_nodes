@@ -6,6 +6,10 @@ This project implements a decentralized Bluetooth Mesh sensor network using the 
 
 The system consists of firmware for nRF5340/nRF52 series boards and a PC-side host application. Both applications are designed to be simple to expand when adding new sensors to the nodes, as well as new sensor types.
 
+The mesh topology was chosen in order to allow distant nodes to communicate with a Gateway or Central node even if they are not within radio range of eachother. As long as there is at least one Relay node within range of both, the distant node and the Central can still exchange messages.
+
+![Mesh Topologies](./assets/mesh_topologies.svg "Mesh Topologies")
+
 At the moment, an nRF52840DK board supports reading data from a DHT11 sensor as a demonstration, while an nRF5340DK board simulates sensor readings by periodically generating compatible data.
 
 ## Node Firmware
@@ -132,6 +136,10 @@ static const struct bt_mesh_model_op vnd_ops[] = {
 
 3. Cancel Central Op - When a Central node is disconnected from its host, or the Gateway App is closed, the Central lets the other nodes know that it can no longer forward their messages. The other nodes will update this information locally and will store their data in flash until a new Central is chosen.
 
+<p align="center">
+  <img src="./assets/element_composition.svg" />
+</p>
+
 The sensor nodes in this network are all identical. They contain a single Element, which in turn contains a Configuration Server Model (mandatory), a Health Server Model (used to identify the node during provisioning) and the Custom Vendor Model.
 
 ```C
@@ -160,7 +168,13 @@ static const struct bt_mesh_elem elements[] = {
 };
 ```
 
-The protocol used to transfer messages accross the network devides the payload into 1 byte representing the number of messages being sent, followed by groups of 9 bytes representing the serialized data. Upon reception by a node, the data is copied directly into an internal buffer and sent to a gateway callback. If the node is not a central, no more processing is done on the data. If the node is a central, the data is further packaged inside another protocol for the USB transmission. A two byte sync sequence (`'R'|'X'`) is added at the start, followed by the 16-bit Mesh address of the Central node. After these 4 bytes, the data recieved over BLE is copied directly into the buffer and a `'\0'` is inserted to mark the end of the transmission. At this point, the data is sent out over USB to the Gateway App, which look for the sync sequence to recognise a valid transmission.
+The protocol used to transfer messages accross the network devides the payload into 1 byte representing the number of messages being sent, followed by groups of 9 bytes representing the serialized data. 
+
+![Payload Over the Air](./assets/over_air_payload.svg)
+
+Upon reception by a node, the data is copied directly into an internal buffer and sent to a gateway callback. If the node is not a central, no more processing is done on the data. If the node is a central, the data is further packaged inside another protocol for the USB transmission. A two byte sync sequence (`'R'|'X'`) is added at the start, followed by the 16-bit Mesh address of the Central node. After these 4 bytes, the data recieved over BLE is copied directly into the buffer and a `'\0'` is inserted to mark the end of the transmission. At this point, the data is sent out over USB to the Gateway App, which look for the sync sequence to recognise a valid transmission.
+
+![Payload Over USB](./assets/over_usb_payload.svg)
 
 #### Flash storage
 
