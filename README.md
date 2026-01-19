@@ -170,7 +170,9 @@ static const struct bt_mesh_elem elements[] = {
 
 The protocol used to transfer messages accross the network devides the payload into 1 byte representing the number of messages being sent, followed by groups of 9 bytes representing the serialized data. 
 
-![Payload Over the Air](./assets/over_air_payload.svg)
+<p align="center">
+  <img src="./assets/over_air_payload.svg" />
+</p>
 
 Upon reception by a node, the data is copied directly into an internal buffer and sent to a gateway callback. If the node is not a central, no more processing is done on the data. If the node is a central, the data is further packaged inside another protocol for the USB transmission. A two byte sync sequence (`'R'|'X'`) is added at the start, followed by the 16-bit Mesh address of the Central node. After these 4 bytes, the data recieved over BLE is copied directly into the buffer and a `'\0'` is inserted to mark the end of the transmission. At this point, the data is sent out over USB to the Gateway App, which look for the sync sequence to recognise a valid transmission.
 
